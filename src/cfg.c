@@ -81,6 +81,8 @@ _Static_assert(offsetof(cfg_t, a26_video_width) == 0x149, "cfg_t.a26_video_width
 _Static_assert(offsetof(cfg_t, cc_time_limit) == 0x14a, "cfg_t.cc_time_limit must stay at CFG_ADDR+$14A");
 _Static_assert(offsetof(cfg_t, menu_music_random) == 0x14b, "cfg_t.menu_music_random must stay at CFG_ADDR+$14B");
 _Static_assert(offsetof(cfg_t, menu_music_folder) == 0x14c, "cfg_t.menu_music_folder must stay at CFG_ADDR+$14C");
+_Static_assert(offsetof(cfg_t, text_outline_mode) == 0x1cc, "cfg_t.text_outline_mode must stay at CFG_ADDR+$1CC");
+_Static_assert(offsetof(cfg_t, text_antialias_mode) == 0x1cd, "cfg_t.text_antialias_mode must stay at CFG_ADDR+$1CD");
 
 const cfg_t CFG_DEFAULT = {
   .vidmode_menu = VIDMODE_60,
@@ -144,7 +146,9 @@ const cfg_t CFG_DEFAULT = {
   .a26_video_width = 0,
   .cc_time_limit = 3,  /* 6 minutes, the event setting */
   .menu_music_random = 0,
-  .menu_music_folder = "/sd2snes/music"
+  .menu_music_folder = "/sd2snes/music",
+  .text_outline_mode = 0,    /* follow the theme */
+  .text_antialias_mode = 0
 };
 
 cfg_t CFG;
@@ -304,7 +308,9 @@ static const cfg_item_t cfg_items[] = {
   CFGI(CFG_GAME_INFO_MUSIC,             game_info_music,            CK_BOOL,    0),
   CFGI(CFG_ENABLE_WIFI,                 enable_wifi,                CK_BOOL,    0),
   CFGI(CFG_MENU_MUSIC_RANDOM,           menu_music_random,          CK_BOOL,    0),
-  CFGI(CFG_MENU_MUSIC_FOLDER,           menu_music_folder,          CK_STR,     0)
+  CFGI(CFG_MENU_MUSIC_FOLDER,           menu_music_folder,          CK_STR,     0),
+  CFGI(CFG_TEXT_OUTLINE,                text_outline_mode,          CK_NUM,     0x20),
+  CFGI(CFG_TEXT_ANTIALIAS,              text_antialias_mode,        CK_NUM,     0x20)
 };
 #undef CFGI
 

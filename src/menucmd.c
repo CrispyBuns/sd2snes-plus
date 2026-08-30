@@ -293,7 +293,7 @@ static void delete_srm_from(sel_src_t s) {
    sitting in (FILESEL_CWD, which the menu keeps at SRAM_MENU_FILEPATH_ADDR) with no item
    pre-selected. Never reuse SRAM_LASTGAME_DIR/FILE for this: those are rewritten on every
    menu boot by cfg_dump_listed_games_for_snes. */
-static NO_INLINE void browser_pos_save(const char *path) {
+NO_INLINE void browser_pos_save(const char *path) {
   char dir[256];
   const char *slash = path ? strrchr(path, '/') : NULL;
   if(slash) {

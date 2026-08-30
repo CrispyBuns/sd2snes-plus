@@ -242,6 +242,11 @@ int main(void) {
        the just-loaded menu image in PSRAM, before the SNES runs setup_gfx.
        Fail-safe: a missing/bad theme leaves the baked menu untouched. */
     theme_apply();
+    /* font edge remaps (outline ring / anti-alias step): the theme's own flags
+       OR'd with the CFG.text_outline / CFG.text_antialias options, so the user
+       toggles apply with or without a theme. Must run after theme_apply, which
+       publishes the flags of the theme it just applied. */
+    theme_font_edges();
     /* force memory size + mapper */
     set_rom_mask(0x3fffff);
     set_mapper(0x7);
@@ -402,6 +407,13 @@ int main(void) {
              time the list opens (the dump honors CFG.sort_favorites). */
           STM.num_favorite_games = cfg_dump_listed_games_for_snes(FAVORITES_FILE, SRAM_FAVORITEGAMES_ADDR, 0);
           status_load_to_menu();
+          /* The font edge remap rewrites the PSRAM font in place, so turning the
+             outline or the AA step back ON needs a fresh menu image. Reload when
+             either toggle moved, so the change shows up right away instead of on
+             the next boot -- same pattern as SET_MENU_SPC / SET_THEME, and like
+             them the command has to stay non-zero so the menu loop is left and
+             the outer loop reaches its `if(menu_reload) continue`. */
+          if(theme_font_edges_stale()) { browser_pos_save(NULL); menu_reload = 1; break; }
           cmd=0; /* stay in menu loop */
           break;
         case SNES_CMD_LED_BRIGHTNESS:

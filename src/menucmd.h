@@ -28,4 +28,10 @@ uint8_t menucmd_dispatch(uint8_t cmd, uint8_t *menu_reload);
    export just wrote.  Runs once per menu boot, after the game lists are dumped. */
 void menucmd_export_boot_nav(uint8_t firstboot);
 
+/* Stage where the browser should come back to after a menu reload: `path` = the
+   full SD path of the item that was acted on, or NULL to reopen the folder the
+   browser is currently sitting in with no item selected.  Public because the
+   SAVE_CFG handler (main.c) reloads too, when a font-edge toggle moved. */
+void browser_pos_save(const char *path);
+
 #endif

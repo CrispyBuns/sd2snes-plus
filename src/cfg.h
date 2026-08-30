@@ -80,6 +80,8 @@
 #define CFG_CC_TIME_LIMIT                ("CompCartTimeLimit")
 #define CFG_MENU_MUSIC_RANDOM            ("MenuMusicRandom")
 #define CFG_MENU_MUSIC_FOLDER            ("MenuMusicFolder")
+#define CFG_TEXT_OUTLINE                 ("TextOutline")
+#define CFG_TEXT_ANTIALIAS               ("TextAntiAlias")
 
 #define CFG_MENU_COMBO_MIN_BUTTONS       (3)
 
@@ -177,6 +179,16 @@ typedef struct __attribute__ ((__packed__)) _cfg_block {
      there is no way to type a path with a pad, so the Web Manager owns this field (same precedent as
      the button combos). Must be 128 bytes: CK_STR shares one length across skin_name/bgm_name/this
      one (see the _Static_assert on CFG_STR_LEN in cfg.c). Default "/sd2snes/music". */
+  uint8_t  text_outline_mode;       /* CFG @ $1CC: the menu font's dark outline ring. NOT a bool --
+     0 = follow the theme (default: the .thm's own OUTLINE_OFF flag decides, which is how it behaved
+     before this option existed), 1 = force the ring ON whatever the theme asked for, 2 = force it OFF.
+     "Off" rewrites the ring pixels to transparent in the PSRAM copy of the font (theme_font_remap),
+     so the backdrop gradient shows through -- a palette tweak cannot do this, because the backdrop
+     is an HDMA gradient and any fixed colour leaves a ghost ring. Forcing it ON is free: the remap is
+     ADDITIVE, so "on" simply means not running it over the font the menu image already carries. */
+  uint8_t  text_antialias_mode;     /* CFG @ $1CD: the font's mid-tone anti-aliasing step. Same three
+     states as text_outline_mode (0 theme / 1 on / 2 off) and the same reasoning; "off" folds shade 3
+     into the fill colour (theme_font_remap). Default 0. */
 } cfg_t;
 
 int cfg_save(void);

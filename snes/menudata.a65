@@ -449,6 +449,34 @@ menu_enttab_browser:
  .byt  0,0,0
  .byt  0,0,0
 
+ .byt  MTYPE_VALUE
+ .word !mtext_browser_text_outline
+ .byt  ^mtext_browser_text_outline
+ .word !kv_text_edge
+ .byt  ^kv_text_edge
+ .byt  OPTTYPE_KVBYTE
+ .word !CFG_TEXT_OUTLINE
+ .byt  ^CFG_TEXT_OUTLINE
+ .word !mdesc_browser_text_outline
+ .byt  ^mdesc_browser_text_outline
+ .byt  0,0,0
+ .byt  0,0,0
+ .byt  0,0,0
+
+ .byt  MTYPE_VALUE
+ .word !mtext_browser_text_aa
+ .byt  ^mtext_browser_text_aa
+ .word !kv_text_edge
+ .byt  ^kv_text_edge
+ .byt  OPTTYPE_KVBYTE
+ .word !CFG_TEXT_ANTIALIAS
+ .byt  ^CFG_TEXT_ANTIALIAS
+ .word !mdesc_browser_text_aa
+ .byt  ^mdesc_browser_text_aa
+ .byt  0,0,0
+ .byt  0,0,0
+ .byt  0,0,0
+
  .byt  MTYPE_SUBMENU
  .word !mtext_browser_gameinfo
  .byt  ^mtext_browser_gameinfo

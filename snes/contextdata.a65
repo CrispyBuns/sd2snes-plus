@@ -361,6 +361,16 @@ kv_onoff:
 .word $0001, !text_on : .byt ^text_on
 .word $ffff
 
+; Tri-state for the two font-edge options (TEXT_EDGE_* in src/theme.h).  Not a bool
+; because the font remap can only REMOVE an edge: with a plain on/off the .thm always
+; had the last word, so "On" did nothing visible on a theme that asks for outline-off.
+; THEME is 0 so an old config.yml -- and anything cfg.c clamps -- lands on it.
+kv_text_edge:
+.word $0000, !text_theme : .byt ^text_theme
+.word $0001, !text_on : .byt ^text_on
+.word $0002, !text_off : .byt ^text_off
+.word $ffff
+
 ; Copier-header convention of one IPS patch, edited through PATCH_HDR_SEL.
 ; Values match PATCH_HDR_AUTO/HEADERED/HEADERLESS >> PATCH_FLAG_HDR_SHIFT.
 kv_patch_hdrmode:

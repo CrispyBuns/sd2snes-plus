@@ -322,6 +322,8 @@ mtext_patch_clearppu              .byt "Clear PPU on Boot", 0
 mtext_browser_menumusic           .byt "Menu music", 0
 mtext_browser_menumusic_random    .byt " ", 129, "Random music", 0
 mtext_browser_menusfx             .byt "Menu sounds", 0
+mtext_browser_text_outline        .byt "Text outline", 0
+mtext_browser_text_aa             .byt "Text anti-aliasing", 0
 mtext_browser_sortfav             .byt "Sort favorites", 0
 mtext_browser_gameinfo            .byt "Game Info", 0
 mtext_gameinfo_enable             .byt "Show info screen", 0
@@ -400,6 +402,8 @@ mdesc_browser_restoretheme        .byt "Revert the menu theme to the built-in de
 mdesc_browser_restoreclassic      .byt "Load the classic sd2snes look (needs /sd2snes/classic.thm on the card)", 0
 mdesc_browser_restoremusic        .byt "Revert the menu background music to the default (menu.spc)", 0
 mdesc_browser_menumusic_random    .byt "Pick a random .spc from the music folder on each load", 0
+mdesc_browser_text_outline        .byt "Dark outline around the menu text: follow the theme, or force it", 0
+mdesc_browser_text_aa             .byt "Smooth edges on the menu text: follow the theme, or force it", 0
 mdesc_ingame_cheats               .byt "Whether to start out with cheats enabled. Can be changed using in-game buttons", 0
 mdesc_ingame_shortreset           .byt "Where a reset goes. Folder/ROM reopen the last game folder. Duration: a short press resets the game, a long one goes to the ROM.", 0
 mdesc_ingame_enable               .byt "Required for in-game buttons and 7E/7F cheats", 0
@@ -571,6 +575,7 @@ text_on_p1      .byt "On: P1", 0
 text_on_p2      .byt "On: P2", 0
 text_on         .byt "On", 0
 text_off        .byt "Off", 0
+text_theme      .byt "Theme", 0
 text_cover_large .byt "Large", 0
 text_cover_small .byt "Small", 0
 text_gameinfo_context .byt "Context", 0
