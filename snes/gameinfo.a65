@@ -347,10 +347,11 @@ gsr_joy:
 ; the moved selection reloads any game. Only wired for the browser (gi_query_fill==1).
 ; ===========================================================================
 
-; -- gi_nav_next / gi_nav_prev: move the browser selection to the next / previous TYPE_ROM
-;    entry, skipping dirs/parent/spc/theme, CLAMPED at the list ends (no wrap). Returns
-;    carry CLEAR if it landed on a new ROM (caller reloads), carry SET if there was no
-;    further ROM that way (selection restored, unchanged). Mirrors the filesel window/scroll
+; -- gi_nav_next / gi_nav_prev: move the browser selection to the next / previous bootable
+;    entry (TYPE_ROM or TYPE_NES), skipping dirs/parent/spc/theme, CLAMPED at the list ends
+;    (no wrap). Returns carry CLEAR if it landed on a new ROM (caller reloads), carry SET if
+;    there was no further ROM that way (selection restored, unchanged).
+;    Mirrors the filesel window/scroll
 ;    math but WITHOUT scroll_direntry_clean (it repaints the browser list -> would corrupt
 ;    our VRAM). One cursor blip per press. .as/.xl in/out.
 gi_nav_next:
@@ -386,7 +387,12 @@ gnav_moved:
   beq gnav_clamp
   jsr cover_sel_type         ; A = entry type byte (8-bit)
   cmp #TYPE_ROM
+  beq gnav_hit
+  cmp #TYPE_NES              ; .nes is a bootable entry too (filesel.a65 pairs the two
+                             ; everywhere); without this an all-.nes folder never matches,
+                             ; every press falls through to gnav_clamp and Up/Down look dead
   bne gnav_loop              ; skip non-ROM (dir / parent / spc / theme)
+gnav_hit:
   clc                        ; landed on a ROM
   rts
 gnav_clamp:
