@@ -376,6 +376,7 @@ TRANSLATIONS = {
     'mtext_browser_gameinfo_music': ' {129}Música del vídeo',
     'mdesc_browser_gameinfo_music': 'Reproduce la música del vídeo mientras se muestra el clip. Requiere Mostrar vídeo.',
     'text_gi_developer': 'Desarrollador',
+    'text_gi_publisher': 'Distribuidora',
     'text_gi_year': 'Año',
     'text_gi_players': 'Jugadores',
     'text_gi_genre': 'Género',

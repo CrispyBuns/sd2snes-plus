@@ -377,6 +377,7 @@ TRANSLATIONS = {
     'mtext_browser_gameinfo_music': ' {129}Musica del video',
     'mdesc_browser_gameinfo_music': 'Riproduce la colonna sonora del filmato mentre è visibile. Richiede Mostra video.',
     'text_gi_developer': 'Sviluppatore',
+    'text_gi_publisher': 'Editore',
     'text_gi_year': 'Anno',
     'text_gi_players': 'Giocatori',
     'text_gi_genre': 'Genere',

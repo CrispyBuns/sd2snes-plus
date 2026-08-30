@@ -91,6 +91,14 @@
 #define GI_DESCRIPTION              $FF749A    /* char[256] one line; menu word-wraps */
 #define GI_FMV_FPS                  $FF759A    /* FMV playback fps (when GI_FLAG_FMV) */
 #define GI_FMV_FRAMES               $FF759B    /* FMV total frames (uint16; info/debug) */
+#define GI_PUBLISHER                $FF759D    /* char[40]: publisher, APPENDED at offset 413 of gameinfo_meta_t
+                                                   (right after GI_FMV_FRAMES) so the fields above keep their
+                                                   addresses -- the assembly reads every GI_* by fixed address,
+                                                   and inserting next to GI_DEVELOPER, where the key sits in the
+                                                   .yml, would have shifted eight symbols at once. An old
+                                                   firmware never writes here, so gi_build_body_normal skips the
+                                                   whole row when byte 0 reads $00 or $FF. Lockstep with
+                                                   src/gameinfo.h. */
 #define GI_DESC_EXT                 $FF7600    /* full description char[2048] NUL-term staged by CMD_GI_DESC_FULL;
                                                   first byte 0 = invalid -> menu falls back to GI_DESCRIPTION;
                                                   lockstep with SRAM_GAMEINFO_DESCEXT_ADDR in src/memmap.h */

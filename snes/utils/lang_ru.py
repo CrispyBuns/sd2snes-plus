@@ -365,6 +365,7 @@ TRANSLATIONS = {
     'mtext_browser_gameinfo_music': ' {129}Музыка ролика',
     'mdesc_browser_gameinfo_music': 'Играть звук ролика, пока он идёт. Требуется Показывать видео.',
     'text_gi_developer': 'Разработчик',
+    'text_gi_publisher': 'Издатель',
     'text_gi_year': 'Год',
     'text_gi_players': 'Игроков',
     'text_gi_genre': 'Жанр',

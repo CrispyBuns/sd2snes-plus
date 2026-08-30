@@ -493,6 +493,7 @@ void gameinfo_load(uint8_t *rom_path) {
   if(!file_res) {
     gi_field("title",        meta.title,        sizeof(meta.title));
     gi_field("developer",    meta.developer,    sizeof(meta.developer));
+    gi_field("publisher",    meta.publisher,    sizeof(meta.publisher));
     gi_field("release_year", meta.year,         sizeof(meta.year));
     gi_field("players",      meta.players,      sizeof(meta.players));
     gi_field("genre",        meta.genre,        sizeof(meta.genre));
@@ -519,6 +520,7 @@ void gameinfo_load(uint8_t *rom_path) {
   if(!meta.title[0])
     gi_utf8_to_font(base + stem_off, meta.title, sizeof(meta.title));
   gi_dash(meta.developer);
+  gi_dash(meta.publisher);
   gi_dash(meta.year);
   gi_dash(meta.players);
   gi_dash(meta.genre);

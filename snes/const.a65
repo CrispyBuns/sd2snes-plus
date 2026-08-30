@@ -702,6 +702,7 @@ text_patch_hdrsel_off  .byt "Headerless", 0
 
 ; pre-boot game info screen (snes/gameinfo.a65)
 text_gi_developer .byt "Developer", 0
+text_gi_publisher .byt "Publisher", 0
 text_gi_year      .byt "Year", 0
 text_gi_players   .byt "Players", 0
 text_gi_genre     .byt "Genre", 0

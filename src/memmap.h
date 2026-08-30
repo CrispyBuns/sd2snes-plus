@@ -263,7 +263,7 @@
    above is capped by the YAML parser (YAML_BUFLEN); this region carries the complete text,
    read with a streaming line scanner outside the YAML parser. A 1st byte of 0 = invalid ->
    the menu falls back to the struct's description[256]. Sits after the struct's end
-   ($FF759D) and before SRAM_SCRATCHPAD ($FFFF00); lockstep with GI_DESC_EXT in
+   ($FF75C5, once publisher[40] was appended) and before SRAM_SCRATCHPAD ($FFFF00); lockstep with GI_DESC_EXT in
    snes/memmap.i65. */
 #define SRAM_GAMEINFO_DESCEXT_ADDR   (0xFF7600L)
 #define SRAM_SCRATCHPAD              (0xFFFF00L)

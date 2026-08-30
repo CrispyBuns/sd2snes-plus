@@ -374,6 +374,7 @@ TRANSLATIONS = {
     'mtext_browser_gameinfo_music': ' {129}Jouer la musique de la vidéo',
     'mdesc_browser_gameinfo_music': 'Jouer la bande-son du clip pendant sa lecture. Nécessite Afficher la vidéo.',
     'text_gi_developer': 'Développeur',
+    'text_gi_publisher': 'Éditeur',
     'text_gi_year': 'Année',
     'text_gi_players': 'Joueurs',
     'text_gi_genre': 'Genre',
