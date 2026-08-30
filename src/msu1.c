@@ -570,17 +570,30 @@ static void menusfx_close(void) {
    Nav blips now play from the FPGA sfxdma engine: each effect's PCM body is
    preloaded into PSRAM once, and the FPGA streams it into dac_buf on its own,
    immune to any MCU stall.  (FMV info-screen MUSIC still uses the MCU-fed path.)
+
+   The four effects SHARE the 256 KB window as one budget, handed out by a bump
+   allocator in first-use order, instead of owning a fixed 64 KB slot each.  At
+   44.1 kHz 16-bit stereo (4 bytes per frame) a fixed slot was 0.371 s, and an
+   effect that did not fit was REJECTED by menusfx_preload (ready = -1), which
+   makes menu_sfx_play return without a sound -- so a long effect went silent
+   rather than being cut short, with nothing on screen to say why.  Sharing lets a
+   single effect run to ~1.49 s and lets the four coexist in any mix that fits the
+   window (e.g. 17K + 36K + 20K + 180K).  Consequence: a slot's base depends on
+   what was loaded before it and on its own size, so it can only be fixed inside
+   menusfx_preload, once f_size is known -- and an effect may now straddle a PSRAM
+   bank boundary, which the fetcher does not care about (sfxdma.v addresses PSRAM
+   as base_r + src_off, one flat 24-bit byte address).
    ======================================================================= */
-#define MENU_SFX_SLOTS      4
-#define MENU_SFX_SLOT_SIZE  0x10000UL  /* 64 KB/slot, bank-aligned in the free
-                                          0xCC0000..0xCFFFFF PSRAM window */
+#define MENU_SFX_SLOTS   4
+#define MENU_SFX_WINDOW  0x40000UL  /* the whole free 0xCC0000..0xCFFFFF PSRAM window */
 typedef struct {
   const char *name;    /* stable static path pointer; 0 = free slot */
-  uint32_t    base;    /* PSRAM byte address of the PCM body */
+  uint32_t    base;    /* PSRAM byte address of the PCM body (set by menusfx_preload) */
   uint32_t    bytelen; /* body length in bytes (frame_count * 4) */
   int8_t      ready;   /* 1 = preloaded ok, -1 = missing/bad, 0 = not loaded yet */
 } menusfx_slot_t;
 static menusfx_slot_t menusfx_slots[MENU_SFX_SLOTS];  /* .bss: zero-init = all free */
+static uint32_t menusfx_next = SRAM_MENU_SFX_ADDR;    /* bump allocator: next free byte */
 static FIL menusfx_pre_fil IN_AHBRAM;                 /* preload handle (off the main .bss) */
 
 /* Stream one effect's PCM body (offset 8..EOF) into its PSRAM slot, once.
@@ -589,6 +602,7 @@ static void menusfx_preload(menusfx_slot_t *s) {
   UINT br = 0;
   uint8_t magic[4];
   DWORD fsz;
+  uint32_t need;
   s->ready = -1;                                    /* pessimistic until fully streamed */
   ff_sd_offload = 0; sd_offload = 0;                /* the magic read below is a normal RAM read */
   if(f_open(&menusfx_pre_fil, (const TCHAR*)s->name, FA_READ) != FR_OK) return;
@@ -596,10 +610,20 @@ static void menusfx_preload(menusfx_slot_t *s) {
     f_close(&menusfx_pre_fil); return;              /* not a valid MSU-1 PCM */
   }
   fsz = f_size(&menusfx_pre_fil);
-  if(fsz <= MSU_PCM_OFFSET_WAVEDATA
-     || (fsz - MSU_PCM_OFFSET_WAVEDATA) > MENU_SFX_SLOT_SIZE) {
-    f_close(&menusfx_pre_fil); return;              /* empty, or too big for a slot */
+  if(fsz <= MSU_PCM_OFFSET_WAVEDATA) {
+    f_close(&menusfx_pre_fil); return;              /* header only, no body */
   }
+  s->bytelen = (uint32_t)(fsz - MSU_PCM_OFFSET_WAVEDATA);
+  /* Claim the body out of the shared window, rounded up to a 4-byte DAC frame so the
+     NEXT effect still starts on a frame boundary.  Written as "space left" rather than
+     "end >= next + need" so it cannot overflow.  No room -> ready stays -1, i.e. this
+     effect is silent and the menu is otherwise unaffected (same fail-safe as before,
+     only now it takes a genuinely oversized set of effects to hit it). */
+  need = (s->bytelen + 3) & ~(uint32_t)3;
+  if(need > (SRAM_MENU_SFX_ADDR + MENU_SFX_WINDOW) - menusfx_next) {
+    f_close(&menusfx_pre_fil); return;
+  }
+  s->base = menusfx_next;
   /* Stream SD -> PSRAM the SAME way load_cover does (cover.c cover_stream): f_read into
      file_buf, then sram_writeblock into PSRAM.  NOT sd_offload DMA: sd_offload asserts
      SD_DMA_TO_ROM, which forces ROM_ADDR=MCU_ADDR for the WHOLE transfer.  A nav SFX is
@@ -609,11 +633,11 @@ static void menusfx_preload(menusfx_slot_t *s) {
      slots (never taking ROM_ADDR from the live SNES), exactly like the cover load that
      already streams to PSRAM on every browse without ever freezing. */
   f_lseek(&menusfx_pre_fil, MSU_PCM_OFFSET_WAVEDATA);
-  s->bytelen = (uint32_t)(fsz - MSU_PCM_OFFSET_WAVEDATA);
   if(!psram_stream(&menusfx_pre_fil, s->base, s->bytelen, 0)) {
     f_close(&menusfx_pre_fil); return;              /* read error -> stay silent */
   }
   f_close(&menusfx_pre_fil);
+  menusfx_next += need;                             /* commit only what was fully streamed */
   s->ready = 1;
 }
 
@@ -626,7 +650,8 @@ static menusfx_slot_t *menusfx_slot_for(const char *filename) {
   for(i = 0; i < MENU_SFX_SLOTS; i++)
     if(!menusfx_slots[i].name) {                    /* claim a free slot + preload it */
       menusfx_slots[i].name = filename;
-      menusfx_slots[i].base = SRAM_MENU_SFX_ADDR + (uint32_t)i * MENU_SFX_SLOT_SIZE;
+      /* No base here: the bodies share one budget, so where this one lands depends on
+         its own size, which menusfx_preload learns from f_size. */
       menusfx_preload(&menusfx_slots[i]);
       return &menusfx_slots[i];
     }
@@ -640,6 +665,11 @@ static menusfx_slot_t *menusfx_slot_for(const char *filename) {
 void menu_sfx_forget(void) {
   int i;
   for(i = 0; i < MENU_SFX_SLOTS; i++) { menusfx_slots[i].name = 0; menusfx_slots[i].ready = 0; }
+  /* The bump allocator has to be rewound WITH the table: the caller has just made the
+     whole window free again (memtest.c overwrites all of it), and a pointer left where
+     it stopped would keep handing out space that no longer exists -- after a couple of
+     forget/re-preload rounds nothing would fit and every effect would go silent. */
+  menusfx_next = SRAM_MENU_SFX_ADDR;
 }
 
 int menu_sfx_active(void) {
