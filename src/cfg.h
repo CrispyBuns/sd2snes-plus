@@ -82,6 +82,7 @@
 #define CFG_MENU_MUSIC_FOLDER            ("MenuMusicFolder")
 #define CFG_TEXT_OUTLINE                 ("TextOutline")
 #define CFG_TEXT_ANTIALIAS               ("TextAntiAlias")
+#define CFG_ASK_CLOCK_ON_BOOT            ("AskClockOnBoot")
 
 #define CFG_MENU_COMBO_MIN_BUTTONS       (3)
 
@@ -189,6 +190,11 @@ typedef struct __attribute__ ((__packed__)) _cfg_block {
   uint8_t  text_antialias_mode;     /* CFG @ $1CD: the font's mid-tone anti-aliasing step. Same three
      states as text_outline_mode (0 theme / 1 on / 2 off) and the same reasoning; "off" folds shade 3
      into the fill colour (theme_font_remap). Default 0. */
+  uint8_t  ask_clock_on_boot;       /* CFG @ $1CE: show the "Please set the time" prompt when the
+     menu starts and the RTC is marked invalid (ST_RTC_VALID != 0). The firmware keeps flagging the
+     RTC invalid until the user really sets it, so without this the prompt comes back on EVERY boot.
+     Gated entirely menu-side (snes/main.a65); the RTC itself is untouched, and the "Set clock" menu
+     entry keeps working. Default 1. */
 } cfg_t;
 
 int cfg_save(void);

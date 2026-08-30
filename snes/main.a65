@@ -196,7 +196,13 @@ coldboot_autoboot_out:
   jsr filesel_nav_last
 +
 ++
+  ; "Please set the time" prompt. Gated MENU-side on purpose: the MCU must keep
+  ; treating the RTC as invalid (it still stamps the fallback date and calls
+  ; invalidate_rtc), so only the QUESTION is suppressed -- the Set Clock screen
+  ; stays reachable from the menu and still works.
   sep #$20 : .as
+  lda @CFG_ASK_CLOCK_ON_BOOT
+  beq +
   lda @ST_RTC_VALID
   beq +
   jsl rtc_init
