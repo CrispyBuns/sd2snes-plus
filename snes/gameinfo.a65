@@ -88,13 +88,6 @@
 #define GIB_M3_VAL       50
 #define GIB_CHIP_X       44        ; chip NAME text X (Developer row, left of the OBJ icon)
 #define GIB_CHIP_W       12        ; chip name clip (ends before the icon)
-; chip OBJ icon (16x16, .gd path only -- the .cov band path owns OBJ, shows name only):
-#define GIB_CHIP_ICON_X  224       ; sprite X in px (far right; row-20 metadata ends ~px 220)
-#define GIB_CHIP_ICON_Y  152       ; sprite Y in px (= GIB_DEV_ROW*8; spans rows 19-20)
-#define GI_CHIP_OBSEL    $02        ; $2101: OBJ name base $4000 (over unused BG2 font #160+), 8/16
-#define GI_CHIP_VRAM0    $4a00      ; tiles #160,#161 (top row of the 16x16)
-#define GI_CHIP_VRAM1    $4b00      ; tiles #176,#177 (bottom row)
-#define GI_CHIP_TILE     160        ; OAM tile number (top-left of the 2x2)
 #define GIB_DESC_X       2
 #define GIB_DESC_R0      22        ; short (normal) description: first row (row 21 = gap under metadata)
 #define GIB_NORM_DESC_RL 24        ; short (normal) description: last row -> 3 lines (22..24), ellipsis
@@ -596,7 +589,7 @@ gi_dc_show:
   ;     would show it over the gradient, so clip BG1/BG2 OUTSIDE px 1..252 via WINDOW 2.
   ;     (Window 1 is off-limits: the menu NMI rewrites its left/right $2126/$2127 every
   ;     frame for the cursor bar. Window 2's $2128/$2129 are never touched.) OBJ is left
-  ;     unclipped so the chip icon shows; clipped pixels fall back to the gradient backdrop. ---
+  ;     unclipped (the cover rides it); clipped pixels fall back to the gradient backdrop. ---
   lda #$cc : sta $2123       ; BG1+BG2: window-2 enable + invert (mask area = OUTSIDE)
   stz $2125                  ; OBJ/colour window off (NMI's window-1 writes stay inert)
   stz $212a                  ; BG window logic = OR (single window -> = window 2 alone)
@@ -619,7 +612,6 @@ gi_dc_show:
   ; --- build the screen ---
   jsr gi_upload_band         ; image tiles + remapped band tilemap; clear BG2 band
   jsr gi_draw_body           ; hiprint metadata + wrapped description (mode-5 body)
-  jsr gi_chip_icon           ; 16x16 microchip OBJ next to the chip name (.gd path only)
   lda @GI_FLAGS              ; arm the FMV frame pacing when a .fmv is playing (else no-op)
   and #GI_FLAG_FMV
   beq gidcs_nofmv
@@ -1197,8 +1189,7 @@ gi_dma_body:
 
 ; -- gi_draw_chip: the special-chip NAME text on the Developer row (left of the OBJ icon),
 ;    in the value colour. Skipped when GI_CHIP is empty or the "-" placeholder (no special
-;    chip). Pure body text -> cleared/redrawn for free in Y mode. Shown in BOTH paths; the
-;    OBJ icon (gi_chip_icon) only joins it in the .gd path. .as/.xl in.
+;    chip). Pure body text -> cleared/redrawn for free in Y mode.
 gi_draw_chip:
   php
   sep #$20 : .as
@@ -1216,119 +1207,6 @@ gi_draw_chip:
 gdc_none:
   plp
   rts
-
-; -- gi_chip_has: carry CLEAR when a chip icon should be shown -- a special chip exists AND
-;    the band is the .gd image (so OBJ is free; the .cov band path owns OBJ for the cover, and
-;    shows the chip as text only). A/flags only. .as in.
-gi_chip_has:
-  lda @GI_FLAGS
-  and #GI_FLAG_IMAGE
-  beq gch_no                 ; .cov band -> OBJ taken by the cover; name text only
-  lda @GI_CHIP
-  beq gch_no
-  cmp #$2d
-  beq gch_no
-  clc
-  rts
-gch_no:
-  sec
-  rts
-
-; -- gi_chip_icon: float the 16x16 microchip OBJ next to the chip name (.gd path only).
-;    Tiles -> unused BG2 font slots #160/#161/#176/#177 ($4A00/$4B00), pal -> CGRAM 128
-;    (OBJ pal 0, free in the .gd path), one sprite in OAM slot 0 at the far right of the
-;    metadata block. Runs in gi_dc_show's forced blank. The .gd band uses no OBJ otherwise,
-;    so enabling OBJ here is safe; gi_chip_obj_hide drops it during Y mode. .as/.xl in.
-gi_chip_icon:
-  php
-  sep #$20 : .as
-  rep #$10 : .xl
-  jsr gi_chip_has
-  bcs gci_done
-  lda #GI_CHIP_OBSEL : sta $2101
-  ; tiles: top row (#160,#161) -> $4A00, bottom row (#176,#177) -> $4B00 (64 bytes each)
-  ldx #GI_CHIP_VRAM0 : stx $2116
-  DMA7(#$01, #$0040, #^gi_chip_tiles, #!gi_chip_tiles, #$18)
-  ldx #GI_CHIP_VRAM1 : stx $2116
-  DMA7(#$01, #$0040, #^gi_chip_tiles, #!gi_chip_tiles+64, #$18)
-  ; palette -> CGRAM 128 (OBJ palette 0)
-  lda #$80 : sta $2121
-  DMA7(#$00, #$0020, #^gi_chip_pal, #!gi_chip_pal, #$22)
-  ; OAM slot 0 = the icon; hide slots 1..63 (slots 64..127 stay hidden from boot)
-  jsr gi_chip_build_oam
-  ldx #COVER_OAM_FIRST*2 : stx $2102
-  DMA7(#$00, #COVER_OAM_LO_BYTES, #^COVER_OAM_LO, #!COVER_OAM_LO, #$04)
-  ldx #$0100 : stx $2102       ; high table: size=1 (16x16), X bit8=0
-  DMA7(#$08, #COVER_OAM_HI_BYTES, #^oamlarge, #!oamlarge, #$04)
-  lda #$13 : sta $212c         ; enable OBJ (.gd band uses no OBJ otherwise)
-  sta $212d
-gci_done:
-  plp
-  rts
-
-; -- gi_chip_build_oam: slot 0 = the 16x16 chip sprite at (GIB_CHIP_ICON_X, GIB_CHIP_ICON_Y),
-;    tile GI_CHIP_TILE, attr $30 (priority 3, OBJ pal 0); slots 1..63 hidden (Y=$f0). Built in
-;    COVER_OAM_LO (free in the .gd path -- the cover isn't shown). .as/.xl in.
-gi_chip_build_oam:
-  php
-  sep #$20 : .as
-  rep #$10 : .xl
-  ldx #$0000
-  lda #GIB_CHIP_ICON_X : sta @COVER_OAM_LO,x     ; byte 0: X
-  inx
-  lda #GIB_CHIP_ICON_Y : sta @COVER_OAM_LO,x     ; byte 1: Y
-  inx
-  lda #GI_CHIP_TILE    : sta @COVER_OAM_LO,x     ; byte 2: tile
-  inx
-  lda #$30             : sta @COVER_OAM_LO,x     ; byte 3: attr (priority 3, OBJ pal 0)
-  inx
-gcb_oam_hide:
-  cpx #COVER_OAM_LO_BYTES
-  bcs gcb_oam_done
-  lda #$f0 : sta @COVER_OAM_LO,x                 ; hide unused slots (Y=$f0)
-  inx
-  bra gcb_oam_hide
-gcb_oam_done:
-  plp
-  rts
-
-; -- gi_chip_obj_hide / _show: drop/restore the .gd chip icon for Y mode. In the .gd path OBJ
-;    is ONLY this icon, so toggling the OBJ layer bit is enough (the .cov cover, which would
-;    own OBJ, is in the other band path where gi_chip_has is false -> these are no-ops). .as in.
-gi_chip_obj_hide:
-  php
-  sep #$20 : .as
-  jsr gi_chip_has
-  bcs gcoh_done
-  lda #$03 : sta $212c
-  sta $212d
-gcoh_done:
-  plp
-  rts
-gi_chip_obj_show:
-  php
-  sep #$20 : .as
-  jsr gi_chip_has
-  bcs gcos_done
-  lda #$13 : sta $212c
-  sta $212d
-gcos_done:
-  plp
-  rts
-
-; -- 16x16 microchip OBJ icon (4 tiles TL,TR,BL,BR, 4bpp) + its 16-colour OBJ palette.
-;    Generated from utils-side ASCII art (canonical IC: body + inner die + pins). idx0 = clear.
-gi_chip_tiles:
-  .byt $00,$00,$04,$00,$04,$00,$00,$00,$00,$0f,$60,$0f,$03,$0f,$03,$0f
-  .byt $00,$00,$00,$00,$00,$00,$1f,$00,$10,$00,$10,$00,$10,$00,$10,$00
-  .byt $00,$00,$90,$00,$90,$00,$00,$00,$00,$f0,$06,$f0,$c0,$f0,$c0,$f0
-  .byt $00,$00,$00,$00,$00,$00,$f8,$00,$08,$00,$08,$00,$08,$00,$08,$00
-  .byt $63,$0f,$03,$0f,$00,$0f,$60,$0f,$00,$00,$04,$00,$04,$00,$00,$00
-  .byt $10,$00,$10,$00,$10,$00,$10,$00,$1f,$00,$00,$00,$00,$00,$00,$00
-  .byt $c6,$f0,$c0,$f0,$00,$f0,$06,$f0,$00,$00,$90,$00,$90,$00,$00,$00
-  .byt $08,$00,$08,$00,$08,$00,$08,$00,$f8,$00,$00,$00,$00,$00,$00,$00
-gi_chip_pal:
-  .word $0000,$1b5f,$2ce5,$72c8,$55ec,$0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000
 
 ; -- gi_clear_body_buf: zero rows 16..31 of BG1_TILE_BUF and BG2_TILE_BUF (28..31 are
 ;    below the footer -- cleared so the menu's status-bar/clock tiles don't bleed). .as/.xl.
@@ -1472,7 +1350,6 @@ gi_desc_full_enter:
   sep #$20 : .as
   rep #$10 : .xl
   jsr snd_fx_confirm
-  jsr gi_chip_obj_hide       ; the chip icon (row 18) would sit over the full text -> drop it
   lda #$01 : sta gi_desc_full
   rep #$20 : .al
   stz gi_desc_scroll
@@ -1498,7 +1375,6 @@ gi_desc_full_exit:
   jsr cover_blank_begin
   jsr gi_dma_body
   jsr cover_blank_end
-  jsr gi_chip_obj_show       ; restore the chip icon on the normal screen
   plp
   rts
 
@@ -1957,18 +1833,10 @@ gi_call_sel_flush:
 
 ; -- rebuild + flush the NORMAL body: the cheap, flash-free way back from the guide picker
 ;    (no band/OAM/palette work, unlike gi_dc_show). Byte-for-byte the same sequence as
-;    gi_desc_full_exit, chip icon included -- the picker hides it for the same reason Y mode
-;    does (it floats over the rows the list occupies). .as/.xl in.
+;    gi_desc_full_exit. .as/.xl in.
 gi_call_body_repaint:
   jsr gi_build_body_normal
   jsr gi_sel_flush
-  jsr gi_chip_obj_show
-  rtl
-
-; -- drop the chip OBJ icon while the guide picker owns rows 17..24 (no-op on the .cov band
-;    path, where gi_chip_has early-outs and OBJ belongs to the cover).
-gi_call_chip_hide:
-  jsr gi_chip_obj_hide
   rtl
 
 gi_call_clear_body:

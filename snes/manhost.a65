@@ -242,8 +242,8 @@ mhg_prst:
 	cpx #$0004
 	bne mhg_prst
 	jsl @gi_call_query
-	; (d) OBSEL: the viewer repointed the OBJ name base ($2101) and only the .cov / chip-icon
-	;     paths inside gi_dc_show rewrite it -- a ficha with neither would keep the viewer's.
+	; (d) OBSEL: the viewer repointed the OBJ name base ($2101) and only the .cov path inside
+	;     gi_dc_show rewrites it -- a ficha without a cover would keep the viewer's.
 	sep #$20 : .as
 	lda #COVER_OBSEL : sta @$002101
 	; (e) NMI back on BEFORE anything can wait on isr_done -- gin_syncread does, and the
@@ -276,9 +276,6 @@ mh_select:
 	php
 	sep #$20 : .as
 	rep #$10 : .xl
-	jsl @gi_call_chip_hide                     ; the 16x16 chip OBJ sits on rows 19-20, i.e. over
-	                                            ;   the list -- drop it exactly like Y mode does
-	                                            ;   (no-op on the .cov band path)
 	jsr mh_sel_draw
 mhs_loop:
 	jsl @gi_call_syncread
