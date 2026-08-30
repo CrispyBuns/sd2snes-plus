@@ -238,6 +238,14 @@ uint8_t get_snes_reset() {
   return !BITBAND(SNES_RESET_REG->GPIO_I, SNES_RESET_BIT);
 }
 
+/* CFG.reset_to_menu == RESET_TO_MENU_DURATION: "Duration" mode. Modes 1..3 make
+   EVERY press a long reset, which short-circuits the physical detection below
+   (double press within 230ms / ~1s held). Mode 4 keeps that detection alive, so
+   a SHORT press just resets the running game while a LONG one goes back to the
+   menu exactly like mode 3 (Rom). Everything downstream already treats it as a
+   menu mode (main.c uses >= 2, snes/main.a65 uses >= 2, snes/filesel.a65 >= 3). */
+#define RESET_TO_MENU_DURATION  4
+
 uint8_t get_snes_reset_state(void) {
 
   static tick_t rising_ticks;
@@ -271,7 +279,9 @@ uint8_t get_snes_reset_state(void) {
 
   if(resbutton) { /* Yes (e.g. reset-button is pressed) */
 
-    result = cfg_is_reset_to_menu() ? SNES_RESET_LONG : SNES_RESET_SHORT;
+    uint8_t rtm = cfg_is_reset_to_menu();
+    result = (rtm && rtm != RESET_TO_MENU_DURATION) ? SNES_RESET_LONG
+                                                    : SNES_RESET_SHORT;
     reset_flag = 1;
 
     if(!resbutton_prev) { /* push, reset tick-timer */

@@ -110,7 +110,11 @@ typedef struct __attribute__ ((__packed__)) _cfg_block {
   uint8_t  onechip_transient_fixes; /* override register 2100 bits 3-0 */
   uint8_t  brightness_limit;        /* limit brightness set by register 2100 */
   uint8_t  gsu_speed;               /* GSU speed (0: original, 1: no waitstates */
-  uint8_t  reset_to_menu;           /* Go back to menu on short reset (0=off, 1=on, 2=folder, 3=rom) */
+  uint8_t  reset_to_menu;           /* Go back to menu on reset (0=off, 1=on, 2=folder, 3=rom,
+                                       4=duration). 1..3 make EVERY press a long reset (snes.c
+                                       short-circuits the physical detection); 4 keeps that
+                                       detection alive so a SHORT press just resets the running
+                                       game while a LONG one goes to the menu like mode 3. */
   uint8_t  led_brightness;          /* LED brightness (0..15) */
   uint8_t  enable_cheats;           /* initial cheat enable state */
   uint8_t  reset_patch;             /* enable reset patch */

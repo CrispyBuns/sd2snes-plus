@@ -401,7 +401,7 @@ mdesc_browser_restoreclassic      .byt "Load the classic sd2snes look (needs /sd
 mdesc_browser_restoremusic        .byt "Revert the menu background music to the default (menu.spc)", 0
 mdesc_browser_menumusic_random    .byt "Pick a random .spc from the music folder on each load", 0
 mdesc_ingame_cheats               .byt "Whether to start out with cheats enabled. Can be changed using in-game buttons", 0
-mdesc_ingame_shortreset           .byt "Go back to menu on short reset (Off/On/Folder/ROM). Folder: return to last game folder. ROM: also pre-select the ROM.", 0
+mdesc_ingame_shortreset           .byt "Where a reset goes. Folder/ROM reopen the last game folder. Duration: a short press resets the game, a long one goes to the ROM.", 0
 mdesc_ingame_enable               .byt "Required for in-game buttons and 7E/7F cheats", 0
 mdesc_ingame_buttons              .byt "Enable in-game buttons (reset, en/disable cheats", 127, 128, "). Requires in-game hook to be enabled.", 0
 mdesc_ingame_cheat_overlay        .byt "In-game menu (hold L+R+Y+Left): cheats, savestates, saves and guides. Requires in-game hook. Not available on a few special-chip games.", 0
@@ -576,6 +576,7 @@ text_cover_small .byt "Small", 0
 text_gameinfo_context .byt "Context", 0
 text_nav_folder .byt "Folder", 0
 text_nav_rom    .byt "ROM", 0
+text_nav_duration .byt "Duration", 0
 text_enabled    .byt "Enabled", 0
 text_disabled   .byt "Disabled", 0
 text_normal     .byt "Normal", 0

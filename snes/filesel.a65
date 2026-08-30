@@ -3470,7 +3470,9 @@ filesel_request_filelist_wait_mcu:
 ;   Navigate the file browser to the folder of the most
 ;   recently played game.
 ;   Folder mode (CFG_ENABLE_RST_TO_MENU == 2): folder only.
-;   Rom mode   (CFG_ENABLE_RST_TO_MENU == 3): folder + pre-select ROM.
+;   Rom mode   (CFG_ENABLE_RST_TO_MENU >= 3): folder + pre-select ROM.
+;   Duration mode (4) reaches here only on a LONG reset and then behaves
+;   exactly like Rom (3), hence >= and not == throughout.
 ;   Called after filesel_init when reset_to_menu >= 2 AND
 ;   ST_RESET_TO_MENU_ACTIVE is set (i.e. the console returned to
 ;   the menu via a short reset, not via a cold power-on).
@@ -3528,14 +3530,15 @@ fnl_entry:
   ; Bail out early if no directory path is stored
   lda @LAST_GAME_DIR
   beq fnl_out
-  ; For Rom mode (3) also bail if no last game filename is stored.
+  ; For Rom mode (>= 3, i.e. Rom or Duration) also bail if no last game
+  ; filename is stored.
   ; Not in force mode: there the empty filename is legitimate (a config-menu
   ; action stages the folder only), so navigate the folder and skip the select.
   lda fnl_force_rom
   bne +
   lda @CFG_ENABLE_RST_TO_MENU
   cmp #$03
-  bne +
+  bcc +
   lda @LAST_GAME_FILE
   beq fnl_out
 +
@@ -3565,7 +3568,7 @@ fnl_got_comp_eos:
   jsr fnl_enter_subdir    ; navigate into last path component
   ; fall through to file scan
 fnl_find_file:
-  ; Only pre-select ROM when mode is Rom (3); Folder (2) skips this.
+  ; Only pre-select ROM when mode is Rom or above (>= 3); Folder (2) skips this.
   ; Force mode (browser restore) always pre-selects, but only if a name was
   ; staged -- an empty LAST_GAME_FILE means "reopen the folder only".
   sep #$20 : .as
@@ -3576,7 +3579,7 @@ fnl_find_file:
   bra fnl_do_select
 + lda @CFG_ENABLE_RST_TO_MENU
   cmp #$03
-  bne fnl_out
+  bcc fnl_out
 fnl_do_select:
   jsr fnl_select_file
 fnl_out:

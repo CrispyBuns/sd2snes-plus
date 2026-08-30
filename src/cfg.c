@@ -249,7 +249,7 @@ static const cfg_item_t cfg_items[] = {
   CFGI(CFG_R213F_OVERRIDE,              r213f_override,             CK_BOOL,    0),
   CFGI(CFG_1CHIP_TRANSIENT_FIXES,       onechip_transient_fixes,    CK_BOOL,    0),
   CFGI(CFG_BRIGHTNESS_LIMIT,            brightness_limit,           CK_NIB,     0),
-  CFGI(CFG_ENABLE_RST_TO_MENU,          reset_to_menu,              CK_NUM,     0x31),
+  CFGI(CFG_ENABLE_RST_TO_MENU,          reset_to_menu,              CK_NUM,     0x41),
   CFGI(CFG_ENABLE_CHEATS,               enable_cheats,              CK_BOOL,    0),
   CFGI(CFG_ENABLE_INGAME_HOOK,          enable_ingame_hook,         CK_BOOL,    0),
   CFGI(CFG_ENABLE_INGAME_BUTTONS,       enable_ingame_buttons,      CK_BOOL,    0),
