@@ -208,6 +208,7 @@ text_lang_es                      .byt "Espa", 154, "ol", 0
 text_lang_de                      .byt "Deutsch", 0
 text_lang_fr                      .byt "Fran", 141, "ais", 0
 text_lang_it                      .byt "Italiano", 0
+text_lang_ru                      .byt 80, 121, 99, 99, 207, 205, 206, 0
 ; ---- In-game TAB menu HELP tab (Phase 2). These are the ENGLISH base; the
 ;      per-language dicts (utils/lang_*.py) carry the translations. build_const.py
 ;      pools them into bank $C1 (the menu never renders them), and the SEPARATE

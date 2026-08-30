@@ -27,16 +27,16 @@ all: $(OUT) $(IGMENU) $(MAP)
 # Generate the const source from the English base + language dicts. One run
 # emits both files: const_lang.a65 (bank $C0: neutral data) and const_lang_str.a65
 # (bank $C1: the localized string pool + dispatch tables) -> m3nu.bin spans 2 banks.
-const_lang.a65 const_lang_str.a65 &: const.a65 utils/build_const.py utils/lang_ptbr.py utils/lang_es.py utils/lang_de.py utils/lang_fr.py utils/lang_it.py
-	python3 utils/build_const.py const.a65 utils/lang_ptbr.py utils/lang_es.py utils/lang_de.py utils/lang_fr.py utils/lang_it.py -o const_lang.a65
+const_lang.a65 const_lang_str.a65 &: const.a65 utils/build_const.py utils/lang_ptbr.py utils/lang_es.py utils/lang_de.py utils/lang_fr.py utils/lang_it.py utils/lang_ru.py
+	python3 utils/build_const.py const.a65 utils/lang_ptbr.py utils/lang_es.py utils/lang_de.py utils/lang_fr.py utils/lang_it.py utils/lang_ru.py -o const_lang.a65
 
 # igmenu_lang.i65: the in-game HELP tab's font-encoded i18n string tables, generated
 # from the English base (const.a65) + the SAME language dicts as const_lang, by
 # utils/gen_igmenu_lang.py. Included by igmenu.a65 -> linked into igmenu.bin (bank $C2),
 # SEPARATE from m3nu.bin (which can't reach it). Explicit prereq of igmenu.o65 so it
 # exists before cpp scans igmenu.a65's #include for dependencies.
-igmenu_lang.i65: const.a65 utils/gen_igmenu_lang.py utils/build_const.py utils/lang_ptbr.py utils/lang_es.py utils/lang_de.py utils/lang_fr.py utils/lang_it.py
-	python3 utils/gen_igmenu_lang.py const.a65 utils/lang_ptbr.py utils/lang_es.py utils/lang_de.py utils/lang_fr.py utils/lang_it.py -o igmenu_lang.i65
+igmenu_lang.i65: const.a65 utils/gen_igmenu_lang.py utils/build_const.py utils/lang_ptbr.py utils/lang_es.py utils/lang_de.py utils/lang_fr.py utils/lang_it.py utils/lang_ru.py
+	python3 utils/gen_igmenu_lang.py const.a65 utils/lang_ptbr.py utils/lang_es.py utils/lang_de.py utils/lang_fr.py utils/lang_it.py utils/lang_ru.py -o igmenu_lang.i65
 
 igmenu.o65: igmenu_lang.i65
 
