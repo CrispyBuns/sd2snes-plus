@@ -320,6 +320,7 @@ mtext_cfg_patch                   .byt "Patch Options", 0
 mtext_patch_verify                .byt "Verify Integrity (~23s)", 0
 mtext_patch_clearppu              .byt "Clear PPU on Boot", 0
 mtext_browser_menumusic           .byt "Menu music", 0
+mtext_browser_menumusic_random    .byt " ", 129, "Random music", 0
 mtext_browser_menusfx             .byt "Menu sounds", 0
 mtext_browser_sortfav             .byt "Sort favorites", 0
 mtext_browser_gameinfo            .byt "Game Info", 0
@@ -398,6 +399,7 @@ mdesc_browser_gameinfo_music      .byt "Play the clip's soundtrack while it show
 mdesc_browser_restoretheme        .byt "Revert the menu theme to the built-in default", 0
 mdesc_browser_restoreclassic      .byt "Load the classic sd2snes look (needs /sd2snes/classic.thm on the card)", 0
 mdesc_browser_restoremusic        .byt "Revert the menu background music to the default (menu.spc)", 0
+mdesc_browser_menumusic_random    .byt "Pick a random .spc from the music folder on each load", 0
 mdesc_ingame_cheats               .byt "Whether to start out with cheats enabled. Can be changed using in-game buttons", 0
 mdesc_ingame_shortreset           .byt "Go back to menu on short reset (Off/On/Folder/ROM). Folder: return to last game folder. ROM: also pre-select the ROM.", 0
 mdesc_ingame_enable               .byt "Required for in-game buttons and 7E/7F cheats", 0

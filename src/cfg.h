@@ -78,6 +78,8 @@
 #define CFG_ENABLE_GAME_MANUAL           ("EnableGameManual")
 #define CFG_A26_VIDEO_WIDTH              ("A26VideoWidth")
 #define CFG_CC_TIME_LIMIT                ("CompCartTimeLimit")
+#define CFG_MENU_MUSIC_RANDOM            ("MenuMusicRandom")
+#define CFG_MENU_MUSIC_FOLDER            ("MenuMusicFolder")
 
 #define CFG_MENU_COMBO_MIN_BUTTONS       (3)
 
@@ -160,6 +162,17 @@ typedef struct __attribute__ ((__packed__)) _cfg_block {
      boards. Read at load time by smc_id and shipped to the dsp core in dsp_feat[12:8]. Menu entry
      "Competition Cart timer (min)" under Chip options (kv_cc_time_limit shows the minute count);
      YAML key CompCartTimeLimit. Default 3 = 6 minutes, the setting used at the actual events. */
+  uint8_t  menu_music_random;       /* CFG @ $14B: pick a random .spc from menu_music_folder on every
+     menu load (boot and every return from a game) instead of playing one fixed track. The draw happens
+     in the SNES_CMD_LOAD_MENU_SPC handler, which the menu already fires once per BGM load, so nothing
+     new has to be scheduled. Overrides bgm_name while on; choosing a track from the browser context
+     menu ("Set as menu music") turns it back OFF, otherwise that choice would be silently ignored.
+     An empty/unreadable folder falls back to bgm_name / /sd2snes/menu.spc, so this can never leave
+     the menu silent. Default 0. */
+  uint8_t  menu_music_folder[128];  /* CFG @ $14C: folder scanned by menu_music_random. YAML only --
+     there is no way to type a path with a pad, so the Web Manager owns this field (same precedent as
+     the button combos). Must be 128 bytes: CK_STR shares one length across skin_name/bgm_name/this
+     one (see the _Static_assert on CFG_STR_LEN in cfg.c). Default "/sd2snes/music". */
 } cfg_t;
 
 int cfg_save(void);

@@ -422,6 +422,20 @@ menu_enttab_browser:
  .byt  0,0,0
 
  .byt  MTYPE_VALUE
+ .word !mtext_browser_menumusic_random
+ .byt  ^mtext_browser_menumusic_random
+ .word !kv_onoff
+ .byt  ^kv_onoff
+ .byt  OPTTYPE_KVBYTE
+ .word !CFG_MENU_MUSIC_RANDOM
+ .byt  ^CFG_MENU_MUSIC_RANDOM
+ .word !mdesc_browser_menumusic_random
+ .byt  ^mdesc_browser_menumusic_random
+ .byt  0,0,0
+ .byt  0,0,0
+ .byt  0,0,0
+
+ .byt  MTYPE_VALUE
  .word !mtext_browser_menusfx
  .byt  ^mtext_browser_menusfx
  .word !kv_onoff
