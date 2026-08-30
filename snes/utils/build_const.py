@@ -47,7 +47,38 @@ ACCENTS = {
     # in caps by the in-game menu and "E'" is not an acceptable stand-in for "È",
     # which opens a large share of sentences:
     "ì": 230, "ò": 231, "È": 232, "Ì": 233, "Ò": 234, "Ù": 235,
+    # German additions. Without them ä/ö/ß fall through as literal UTF-8 and
+    # each one renders as two tiles of katakana art. ä/ö/Ä/Ö are the diaeresis
+    # over the same bases as ü/Ü; ß is hand-drawn (it has no base letter):
+    "ä": 236, "ö": 237, "ß": 238, "Ä": 239, "Ö": 240,
+    # Cyrillic, drawn over the dead katakana block (fontedit.py CYRILLIC). Only
+    # the 46 letters that need a tile of their own are here; the 20 that reuse
+    # an existing tile are in HOMOGLYPHS below. Uppercase then lowercase, each
+    # in alphabet order:
+    "Б": 178, "Г": 179, "Д": 180, "Ё": 181, "Ж": 182, "З": 183,
+    "И": 184, "Й": 185, "Л": 186, "П": 187, "Ф": 188, "Ц": 189,
+    "Ч": 190, "Ш": 191, "Щ": 192, "Ъ": 193, "Ы": 194, "Ь": 195,
+    "Э": 196, "Ю": 197, "Я": 198, "б": 199, "в": 200, "г": 201,
+    "д": 202, "ж": 203, "з": 204, "и": 205, "й": 206, "к": 207,
+    "л": 208, "м": 209, "н": 210, "п": 211, "т": 212, "ф": 213,
+    "ц": 214, "ч": 215, "ш": 216, "щ": 217, "ъ": 218, "ы": 219,
+    "ь": 220, "э": 221, "ю": 222, "я": 223,
 }
+
+# Cyrillic letters an existing tile already draws: 12 uppercase and 7 lowercase
+# Latin homoglyphs, plus ё, which IS the French ë (228). ENCODE-ONLY -- putting
+# them in ACCENTS would give a code two owners and DECODE would pick the wrong
+# one, handing back 'А' for a Latin 'A' and 'ё' for a French ë.
+HOMOGLYPHS = {
+    "А": ord("A"), "В": ord("B"), "Е": ord("E"), "К": ord("K"), "М": ord("M"),
+    "Н": ord("H"), "О": ord("O"), "Р": ord("P"), "С": ord("C"), "Т": ord("T"),
+    "У": ord("Y"), "Х": ord("X"),
+    "а": ord("a"), "е": ord("e"), "о": ord("o"), "р": ord("p"), "с": ord("c"),
+    "у": ord("y"), "х": ord("x"),
+    "ё": 228,
+}
+# What encode_string may translate; DECODE stays keyed on ACCENTS alone.
+ENCODE = {**ACCENTS, **HOMOGLYPHS}
 DECODE = {v: k for k, v in ACCENTS.items()}
 
 # `LABEL  .byt  <args>` (args may contain quoted strings and raw byte values).
@@ -66,10 +97,10 @@ def encode_string(text):
             pieces.append(text[i + 1:end])
             i = end + 1
             continue
-        if ch in ACCENTS:
+        if ch in ENCODE:
             if cur:
                 pieces.append(f'"{cur}"'); cur = ""
-            pieces.append(str(ACCENTS[ch]))
+            pieces.append(str(ENCODE[ch]))
         else:
             cur += ch
         i += 1

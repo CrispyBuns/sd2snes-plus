@@ -49,9 +49,53 @@ def test_accent_codes_have_glyphs():
     assert not missing, f"accent codes with no glyph tile in font.a65: {missing}"
 
 
+def test_homoglyphs_match_and_stay_out_of_accents():
+    """HOMOGLYPHS is the encode-only half of the table: a Cyrillic letter drawn
+    by a tile another character already owns. The two copies must agree, and no
+    homoglyph may also sit in ACCENTS -- that would give one code two owners and
+    the decode direction would start handing back the wrong letter."""
+    assert build_const.HOMOGLYPHS == fontedit.HOMOGLYPHS, (
+        "HOMOGLYPHS (build_const.py) != HOMOGLYPHS (fontedit.py):\n"
+        f"  only in build_const: {sorted(set(build_const.HOMOGLYPHS) - set(fontedit.HOMOGLYPHS))}\n"
+        f"  only in fontedit:    {sorted(set(fontedit.HOMOGLYPHS) - set(build_const.HOMOGLYPHS))}"
+    )
+    both = sorted(set(build_const.HOMOGLYPHS) & set(build_const.ACCENTS))
+    assert not both, f"characters in BOTH ACCENTS and HOMOGLYPHS: {both}"
+
+
+def test_homoglyph_codes_point_at_a_real_glyph():
+    """Every homoglyph must land on a tile that exists and is drawn -- it has no
+    tile of its own, so a wrong code is invisible until it reaches a screen."""
+    _, tiles = fontedit.load_font()
+    bad = [f"{ch!r} -> {code}" for ch, code in sorted(build_const.HOMOGLYPHS.items(),
+                                                      key=lambda kv: kv[1])
+           if code >= len(tiles) or not any(tiles[code])]
+    assert not bad, f"homoglyphs pointing at a blank/missing tile: {bad}"
+
+
+def test_accent_tiles_are_distinct():
+    """No two accented letters may share a tile. A byte-identical pair means one
+    of them is drawn with the wrong mark and the reader sees the other letter:
+    the circumflex used to be two dots, which made ê==ë, î==ï and û==ü, and left
+    no shape for ä/ö to take."""
+    _, tiles = fontedit.load_font()
+    seen = {}
+    clashes = []
+    for ch, code in sorted(build_const.ACCENTS.items(), key=lambda kv: kv[1]):
+        key = tuple(tiles[code])
+        if key in seen:
+            other_ch, other_code = seen[key]
+            clashes.append(f"{other_ch!r}({other_code}) == {ch!r}({code})")
+        seen[key] = (ch, code)
+    assert not clashes, f"accent tiles that are byte-identical: {clashes}"
+
+
 if __name__ == "__main__":
     failed = 0
-    for fn in (test_accents_match_accent_map, test_accent_codes_have_glyphs):
+    for fn in (test_accents_match_accent_map, test_accent_codes_have_glyphs,
+               test_homoglyphs_match_and_stay_out_of_accents,
+               test_homoglyph_codes_point_at_a_real_glyph,
+               test_accent_tiles_are_distinct):
         try:
             fn()
             print(f"PASS {fn.__name__}")
