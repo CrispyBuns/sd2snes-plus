@@ -81,6 +81,11 @@ static const char GFXPTR_MAGIC[8] = { '_','G','F','X','P','T','R','_' };
  * theme_font_edges to OR in. */
 static uint16_t theme_font_flags;
 
+/* 1 once SRAM_FONT_ORIG_ADDR holds the pristine font of the menu image that is
+   currently in PSRAM. Cleared by theme_apply (a fresh image, possibly with a
+   different theme font, invalidates the copy). */
+static uint8_t theme_font_orig_ok;
+
 /* Per-slot byte cap == the region's size in the fork menu build. Writes are
  * clamped to this so a malformed/oversized theme can never overrun a region
  * into adjacent menu code. 0 == slot is never themed. Keep in sync with
@@ -168,24 +173,32 @@ static int theme_read_gfxptr(uint16_t gfxptr[THEME_NSLOTS], uint8_t *font_bank) 
  * Values 0 and 1 have high=0 already and survive both. Applying both leaves
  * high = 0 throughout: ring gone, AA folded into the fill -- exactly what the
  * official editor's antiAlias() produces with both boxes unchecked.
- * Rewrites THEME_FONT_LEN bytes of the PSRAM font in place, chunked to keep the
- * stack small; the buffer size is even so [low,high] pairs never straddle a
- * chunk boundary. Caller guarantees at least one remap is requested. */
-static void theme_font_remap(uint32_t font_addr, int aa_off, int outline_off) {
+ * One pass over the whole THEME_FONT_LEN font: read from `src`, stash the bytes
+ * untouched at `save` when that is non-zero, then apply the requested remaps and
+ * write the result to `dst`. dst == src remaps in place; src == the pristine copy
+ * rebuilds from scratch, which is what makes an edge that was removed come back.
+ * Chunked to keep the stack small; the buffer size is even so [low,high] pairs
+ * never straddle a chunk boundary. */
+static __attribute__((noinline))
+void theme_font_pass(uint32_t dst, uint32_t src, uint32_t save,
+                     int aa_off, int outline_off) {
   uint8_t buf[512];
-  uint32_t p = font_addr, remaining = THEME_FONT_LEN;
+  uint32_t rp = src, wp = dst, sp = save, remaining = THEME_FONT_LEN;
   while(remaining) {
     uint16_t chunk = (remaining > sizeof(buf)) ? (uint16_t)sizeof(buf)
                                                : (uint16_t)remaining;
-    sram_readblock(buf, p, chunk);
+    sram_readblock(buf, rp, chunk);
+    if(save) sram_writeblock(buf, sp, chunk);
     for(uint16_t i = 0; i + 1 < chunk; i += 2) {
       uint8_t lo = buf[i], hi = buf[i + 1];
       if(aa_off)      hi &= (uint8_t)~lo;   /* AA step   -> fill        */
       if(outline_off) hi &= lo;             /* ring      -> transparent */
       buf[i + 1] = hi;
     }
-    sram_writeblock(buf, p, chunk);
-    p += chunk;
+    sram_writeblock(buf, wp, chunk);
+    rp += chunk;
+    wp += chunk;
+    sp += chunk;
     remaining -= chunk;
   }
 }
@@ -195,6 +208,9 @@ void theme_apply(void) {
   /* Every exit below leaves the font untouched, so start from "no theme flags":
      theme_font_edges then sees the user toggles only. */
   theme_font_flags = 0;
+  /* ...and from "no pristine copy": this is a fresh menu image, so whatever
+     SRAM_FONT_ORIG_ADDR holds belongs to the previous one. */
+  theme_font_orig_ok = 0;
   /* skin_name holds the FULL SD path of the chosen .thm (captured from the
      browser selection, so themes can live in any visible folder). Anything not
      an absolute path -- empty, or the "sd2snes.skin" sentinel -- means
@@ -303,39 +319,56 @@ int theme_font_edges_stale(void) {
   return theme_font_wanted() != theme_font_applied;
 }
 
-void theme_font_edges(void) {
-  /* Compose the two sources by OR: the toggle only ever removes an edge on top
-     of what the theme asked for (see the font remap notes above). */
-  uint8_t wanted  = theme_font_wanted();
-  int aa_off      = wanted & 1;
-  int outline_off = wanted & 2;
-  /* Record the state up front: whatever this call ends up doing (including the
-     bail-outs below), the font in PSRAM is the one this menu image was loaded
-     with, and that is what a later stale check has to compare against. */
-  theme_font_applied = wanted;
-  /* Nothing to do -> don't even scan for _GFXPTR_. This is the default state
-     (both options on "theme", no theme flags), so the no-theme path costs nothing. */
-  if(!aa_off && !outline_off) return;
-
+/* Resolve the PSRAM address of the menu font, 0 if it cannot be trusted. */
+static __attribute__((noinline)) int theme_font_locate(uint32_t *font_addr) {
   /* theme_apply's own scan is local to it and does not run at all when there is
      no theme, so redo it here through the same helper. */
   uint16_t gfxptr[THEME_NSLOTS];
   uint8_t  font_bank = 0;
   if(!theme_read_gfxptr(gfxptr, &font_bank)) {
     printf("theme: _GFXPTR_ not found in menu image\n");
-    return;
+    return 0;
   }
   /* The font is in bank $C1 but gfxptr[SLOT_FONT] only carries the low word, so
      add the bank byte from the _GFXPTR_ table -- that byte is also what tells a
      menu with the ABI from an old one. Don't test gfxptr[SLOT_FONT] != 0 as a
      guard: the font sits at offset 0, so zero is its real address (that test
      used to skip the remap on every build). */
-  if(font_bank != 0xC0 && font_bank != 0xC1) return;
-  uint32_t font_addr = SRAM_MENU_ADDR
-                     + (((uint32_t)(font_bank - 0xC0)) << 16)
-                     + gfxptr[SLOT_FONT];
-  if(font_addr + THEME_FONT_LEN <= SRAM_MENU_ADDR + THEME_MENU_SIZE)
-    theme_font_remap(font_addr, aa_off, outline_off);
+  if(font_bank != 0xC0 && font_bank != 0xC1) return 0;
+  *font_addr = SRAM_MENU_ADDR
+             + (((uint32_t)(font_bank - 0xC0)) << 16)
+             + gfxptr[SLOT_FONT];
+  return (*font_addr + THEME_FONT_LEN <= SRAM_MENU_ADDR + THEME_MENU_SIZE);
+}
+
+void theme_font_edges(void) {
+  /* Compose the two sources by OR: the toggle only ever removes an edge on top
+     of what the theme asked for (see the font remap notes above). */
+  uint8_t  wanted = theme_font_wanted();
+  uint32_t font_addr;
+  int aa_off      = wanted & 1;
+  int outline_off = wanted & 2;
+  /* Nothing wanted and nothing ever remapped -> the font in PSRAM is still the
+     pristine one, so don't even scan for _GFXPTR_. This is the default state
+     (both options on "theme", no theme flags), so the no-theme path costs nothing. */
+  if(!wanted && !theme_font_orig_ok) { theme_font_applied = 0; return; }
+  /* Record the state up front: whatever this call ends up doing (including the
+     bail-outs below), the font in PSRAM is the one this menu image was loaded
+     with, and that is what a later stale check has to compare against. */
+  theme_font_applied = wanted;
+  if(!theme_font_locate(&font_addr)) return;
+  if(theme_font_orig_ok) {
+    /* Rebuild from the pristine copy. This is the whole point of keeping one:
+       the remap only clears bits, so bringing an edge back -- or swapping which
+       of the two is gone -- is impossible from the remapped font. Also covers
+       wanted == 0, where the pass is a plain restore. */
+    theme_font_pass(font_addr, SRAM_FONT_ORIG_ADDR, 0, aa_off, outline_off);
+  } else {
+    /* First remap for this menu image: the font is still untouched, so capture
+       it on the way through instead of paying a second pass for it. */
+    theme_font_pass(font_addr, font_addr, SRAM_FONT_ORIG_ADDR, aa_off, outline_off);
+    theme_font_orig_ok = 1;
+  }
 }
 
 void theme_select(const char *name) {

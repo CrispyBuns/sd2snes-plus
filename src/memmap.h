@@ -191,6 +191,20 @@
 #define SRAM_TRAINER_SNAP_LO_ADDR    (0xFB0000L) /* previous-value snapshot of WRAM $7E0000-$7EFFFF. Bank-identity with $7E so the scan is `lda @$7E0000,x` / `cmp @$FB0000,x` with no address arithmetic. */
 #define SRAM_TRAINER_SNAP_HI_ADDR    (0xFC0000L) /* previous-value snapshot of WRAM $7F0000-$7FFFFF (bank-identity with $7F). */
 
+/* Pristine copy of the 4 KiB menu font, taken the first time theme_font_edges()
+   remaps it for the current menu image. The remap only ever CLEARS high-plane
+   bits (see theme_font_remap), so turning an edge back on -- or swapping which
+   one is off -- can only be served from an untouched original; without this the
+   two text-edge options could only be applied by reloading the whole menu, which
+   threw the user out of the settings screen they were standing in. Lives in the
+   spare half of the trainer bank: nothing clears $FA (the game-load mirror wipe
+   sram_memset(0xF70000, 0x30000, 0) stops exactly at $FA0000), the trainer block
+   itself ends at $FA403F, and the two never coexist anyway -- the trainer is
+   game-time state and this is menu-time state. Re-captured on every menu load,
+   because theme_apply() clears the "captured" flag along with theme_font_flags. */
+#define SRAM_FONT_ORIG_ADDR          (0xFA8000L)
+#define FONT_ORIG_BYTES              (0x1000)
+
 #define SRAM_SKIN_ADDR               (0xF00000L)
 
 #define SRAM_SPC_DATA_ADDR           (0xFD0000L)
@@ -331,6 +345,9 @@ _Static_assert(SRAM_TRAINER_META_ADDR + TRAINER_META_BYTES <= SRAM_TRAINER_SNAP_
                "the trainer meta block must stay below the WRAM snapshot");
 _Static_assert(SRAM_TRAINER_SNAP_LO_ADDR + 0x10000L == SRAM_TRAINER_SNAP_HI_ADDR,
                "the two trainer snapshot banks must be adjacent and bank-aligned");
+_Static_assert(SRAM_FONT_ORIG_ADDR >= SRAM_TRAINER_META_ADDR + TRAINER_META_BYTES
+               && SRAM_FONT_ORIG_ADDR + FONT_ORIG_BYTES <= SRAM_TRAINER_SNAP_LO_ADDR,
+               "the pristine font copy must fit in the spare tail of the trainer bank");
 _Static_assert(SRAM_TRAINER_SNAP_HI_ADDR + 0x10000L <= SRAM_SPC_DATA_ADDR,
                "the trainer snapshot must stay below the menu SPC data bank");
 _Static_assert(SRAM_TRAINER_BITMAP_ADDR >= 0xF70000L + 0x30000L,

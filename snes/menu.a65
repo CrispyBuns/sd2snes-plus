@@ -1906,6 +1906,19 @@ menu_edit_value:
   bne -
   lda #$0000
   sta @MCU_CMD
+  ; "Text outline" / "Anti-aliasing" are the only two options the firmware answers
+  ; by rewriting the menu font in PSRAM, so they are the only two that need the
+  ; VRAM copy rebuilt.  Both are CFG bytes, so the low word of the target address
+  ; identifies them (they are adjacent, but compare each: the pair is documented
+  ; as adjacent, not guaranteed to stay so).
+  lda w_value_addr
+  cmp #!CFG_TEXT_OUTLINE
+  beq mev_font_edge
+  cmp #!CFG_TEXT_ANTIALIAS
+  bne mev_font_done
+mev_font_edge:
+  jsr menu_font_refresh
+mev_font_done:
   bra menu_edit_value_skip_reset_chghook
 + jsr snd_fx_back      ; value edit cancelled (covers EVERY dialog type)
   lda [w_value_addr]
@@ -1918,6 +1931,66 @@ menu_edit_value_skip_reset_chghook:
   plx
 menu_edit_value_out:
   FreeStack()
+  rts
+
+
+; **** menu font refresh ****
+; The firmware serves "Text outline" / "Anti-aliasing" by remapping the menu font
+; in PSRAM, which leaves the copy already uploaded to VRAM stale.  Re-upload it
+; instead of reloading the whole menu: the tilemaps hold glyph INDICES, so a fresh
+; font re-renders everything on screen by itself and the settings screen the user
+; is standing in stays exactly where it was.
+;
+; "The font is ready" is NOT the SAVE_CFG ack: the firmware echoes the ack BEFORE
+; it runs the handler (echo_mcu_cmd comes ahead of the switch in src/main.c), and
+; the handler still has cfg_save() and the remap ahead of it.  The done edge is
+; SNES_CMD going back to CMD_MCU_RDY when the firmware re-enters its menu loop.
+; Bounded, so a firmware that never comes back cannot hang the menu -- on timeout
+; the font is simply left as it is until the next boot.
+;
+; DBR = 0 for the whole call: genfonts and $2100 are DBR-relative, and this runs
+; from menu_edit_value, whose DBR is the menu entry's bank ($C0/$C1).
+menu_font_refresh:
+  php
+  phb
+  sep #$20 : .as
+  rep #$10 : .xl
+  lda #$00
+  pha
+  plb
+  ldx #$0004                 ; ~1.4 s: the handler can sit in cfg_save() (SD write)
+mfr_outer:
+  ldy #$0000
+mfr_inner:
+  lda @SNES_CMD
+  cmp #CMD_MCU_RDY
+  beq mfr_ready
+  dey
+  bne mfr_inner
+  dex
+  bne mfr_outer
+  bra mfr_done
+mfr_ready:
+  jsr waitblank              ; start of vblank: the whole rebuild fits one blank frame
+  lda #$00
+  sta $4200                  ; NMI off.  NMI_ROUTINE DMAs the tile buffers into VRAM
+                             ;   on channel 7 and drives $2100 -- both collide with
+                             ;   genfonts, which uses the same channel.
+  lda #$80
+  sta $2100                  ; forced blank: VRAM writes are dropped with the screen on
+  jsr genfonts
+  jsr waitblank              ; genfonts overruns the blank, so come back on a frame
+                             ;   boundary: one clean black frame beats half of one
+  lda @$004210               ; drain the missed NMI so re-arming does not fire one
+                             ;   mid-frame, where its VRAM DMA would be discarded
+  lda #$81
+  sta $4200                  ; VBlank NMI + auto joypad read, as setup_hdma arms it
+  lda @cur_bright
+  sta $2100                  ; screen back on at whatever the fade had reached
+mfr_done:
+  rep #$30 : .al : .xl       ; snescom tracks widths in SOURCE order and cannot see
+  plb                        ;   through plp -- re-assert before restoring P, or the
+  plp                        ;   code that follows assembles against ours
   rts
 
 

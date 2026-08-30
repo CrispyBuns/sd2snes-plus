@@ -407,13 +407,13 @@ int main(void) {
              time the list opens (the dump honors CFG.sort_favorites). */
           STM.num_favorite_games = cfg_dump_listed_games_for_snes(FAVORITES_FILE, SRAM_FAVORITEGAMES_ADDR, 0);
           status_load_to_menu();
-          /* The font edge remap rewrites the PSRAM font in place, so turning the
-             outline or the AA step back ON needs a fresh menu image. Reload when
-             either toggle moved, so the change shows up right away instead of on
-             the next boot -- same pattern as SET_MENU_SPC / SET_THEME, and like
-             them the command has to stay non-zero so the menu loop is left and
-             the outer loop reaches its `if(menu_reload) continue`. */
-          if(theme_font_edges_stale()) { browser_pos_save(NULL); menu_reload = 1; break; }
+          /* Text outline / AA moved: re-apply the font edge remap right here.
+             theme_font_edges() keeps a pristine copy of the font in PSRAM, so it
+             can put an edge BACK -- this used to need a full menu reload, which
+             dropped the user out of the settings screen they were standing in.
+             The menu re-uploads the font to VRAM on its side once we are back at
+             CMD_MCU_RDY; see menu_font_refresh in snes/menu.a65. */
+          if(theme_font_edges_stale()) theme_font_edges();
           cmd=0; /* stay in menu loop */
           break;
         case SNES_CMD_LED_BRIGHTNESS:
