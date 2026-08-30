@@ -201,7 +201,24 @@ mhg_loop:
 	- lda @$004212 : and #$01 : beq -          ; auto-joypad read START (bit0 set)
 	- lda @$004212 : and #$01 : bne -          ; auto-joypad read DONE (bit0 clear)
 	rep #$20 : .al
+	; Merge BOTH controllers, the same way read_pad (snes/pad.a65) does it for the rest of
+	; the menu -- the guide picker right before this loop already answers to controller 2,
+	; and the viewer must not be the one place where it stops working.  The low nibble of
+	; $4218/$421a is the controller ID and reads 0 only for a standard pad: a non-zero nibble
+	; means a non-standard controller, and what the mask leaves behind carries no button bits,
+	; so ORing it in contributes nothing instead of injecting phantom presses.
 	lda @$004218
+	and #$000f
+	bne mhg_pad1_id
+	lda @$004218
+mhg_pad1_id:
+	sta @man_pad_cur
+	lda @$00421a
+	and #$000f
+	bne mhg_pad2_id
+	lda @$00421a
+mhg_pad2_id:
+	ora @man_pad_cur
 	sta @man_pad_cur
 	eor @man_pad_prev
 	and @man_pad_cur                           ; (cur ^ prev) & cur = newly pressed

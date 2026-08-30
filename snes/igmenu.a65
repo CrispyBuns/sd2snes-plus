@@ -450,8 +450,27 @@ igm_no_slotpos:
 	                                         ;   restored tab's enter has run, so its cursor vars
 	                                         ;   are live and the bar is right on the FIRST frame
 	; --- seed pprev with the held opening combo so it makes no fresh edge.  Samples the
-	;     LIVE pad, so it is agnostic to which combo is armed (IngameButtonsMenu). ---
-	lda @$004218 : sta @ovl_pprev
+	;     LIVE pad, so it is agnostic to which combo is armed (IngameButtonsMenu).
+	;     BOTH controllers, merged exactly like read_pad (snes/pad.a65) does for the rest of
+	;     the menu: the low nibble of $4218/$421a is the controller ID and reads 0 only for a
+	;     standard pad, so a non-zero nibble means a non-standard controller whose buttons
+	;     must be ignored -- and what the mask leaves behind carries no button bits, so ORing
+	;     it in contributes nothing instead of injecting phantom presses.  The seed and the
+	;     input loop below MUST sample the same pair, or player 2 holding a button at open
+	;     time would produce a phantom edge on the first frame. ---
+	lda @$004218
+	and #$000f
+	bne igm_seed_pad1_id
+	lda @$004218
+igm_seed_pad1_id:
+	sta @ovl_pprev
+	lda @$00421a
+	and #$000f
+	bne igm_seed_pad2_id
+	lda @$00421a
+igm_seed_pad2_id:
+	ora @ovl_pprev
+	sta @ovl_pprev
 	; --- arm the theme's HDMA channels. LAST thing before the unblank, not inside
 	;     ig_theme_init: HDMA keeps running in forced blank, so an armed gradient channel
 	;     (which drives $2121/$2122 every band) would cut into the CGRAM address/data pairs
@@ -502,7 +521,18 @@ igmenu_loop:
 	- lda @$004212 : and #$01 : beq -       ; auto-joypad read START (bit0 set)
 	- lda @$004212 : and #$01 : bne -       ; auto-joypad read DONE (bit0 clear)
 	rep #$20 : .al
-	lda @$004218                            ; fresh pad
+	lda @$004218                            ; fresh pad, controller 1...
+	and #$000f
+	bne igm_pad1_id
+	lda @$004218
+igm_pad1_id:
+	sta @ovl_cur
+	lda @$00421a                            ; ...merged with controller 2 (see the seed above)
+	and #$000f
+	bne igm_pad2_id
+	lda @$00421a
+igm_pad2_id:
+	ora @ovl_cur
 	sta @ovl_cur
 	eor @ovl_pprev
 	and @ovl_cur                            ; (cur ^ prev) & cur = newly pressed
