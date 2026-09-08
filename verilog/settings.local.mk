@@ -28,4 +28,4 @@
 # INTEL_BIN = /opt/intelFPGA/25.1/quartus/bin
 
 # specify number of concurrent SmartXPlorer runs
-# XPLORER_CPUS = 8
+XPLORER_CPUS = 10

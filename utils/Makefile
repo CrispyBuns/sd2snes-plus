@@ -1,6 +1,6 @@
 CC := gcc
 
-CFLAGS = -Wall -Wstrict-prototypes -Werror
+CFLAGS = -Wall -Wstrict-prototypes -O2
 
 BIN = bin2asm bin2c bin2coe chili2chr derle gentilemap mem2lorom palremap palreorder rle genbsxpage
 
