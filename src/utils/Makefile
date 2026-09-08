@@ -1,6 +1,6 @@
 
 CC = gcc
-CFLAGS = -Wall -Wstrict-prototypes -Werror
+CFLAGS = -Wall -Wstrict-prototypes -O2
 
 all: lpcchksum genhdr
 
