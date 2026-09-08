@@ -1,21 +1,10 @@
-# HOST: Build host
-# ================
-# Sets up some build parameters according to the environment used.
-# Possible values:
-# CYGWIN (also use for MINGW64)
-# LINUX (also use for a pure WSL environment)
-# WSL (calls Xilinx tools in WSL since ISE is terminally broken on Windows 11)
 HOST = LINUX
-
-# XILINX_HOME, XILINX_TARGET, INTEL_BIN:
-# Set paths to Xilinx/Intel tools. Adjust these for your environment.
-# ===================================================================
-XILINX_HOME = /opt/Xilinx/14.7/ISE_DS
-XILINX_TARGET = lin64
-INTEL_BIN = /opt/intelFPGA/25.1/quartus/bin
+#XILINX_HOME = /opt/Xilinx/14.7/ISE_DS
+#XILINX_BIN = $(XILINX_HOME)/ISE/bin/lin64
+#XILINX_PATHS = ISE/bin/lin64 ISE/lib/lin64 PlanAhead/bin EDK/bin/lib64 EDK/lib/lin64
+INTEL_BIN = LD_PRELOAD=/usr/lib/x86_64-linux-gnu/libtcmalloc_minimal.so.4 LD_LIBRARY_PATH=/opt/intelFPGA_lite/20.1/quartus/linux64 /opt/intelFPGA_lite/20.1/quartus/linux64
 
 # specify number of concurrent SmartXPlorer runs
 XPLORER_CPUS = 8
-
-# Allow overriding settings in an optional custom `settings.local.mk` file
--include ../settings.local.mk
+XPLORER_PARAMS  = -sf currentProps.stratfile -host_list hostlistfile.txt
+XPLORER_PARAMS += -max_runs 99 -best_n_runs 1
