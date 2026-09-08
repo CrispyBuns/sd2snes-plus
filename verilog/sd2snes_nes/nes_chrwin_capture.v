@@ -20,9 +20,9 @@
 //   set of arrays and one comparator, i.e. it would have made a mapper-4 change
 //   able to perturb the legacy path.  Two instances cost the same LEs (the
 //   arrays are disjoint either way) and cost ZERO risk.  Only ONE of them can
-//   ever produce cnt>=2 in a given run: outside mapper 4 the window vector is a
-//   CONSTANT 0 (MultiMapper publishes it only for mapper 4), and inside mapper 4
-//   the legacy slot0/slot1 tap is a CONSTANT sentinel.  Both directions are
+//   ever produce cnt>=2 in a given run: outside the window-vector mappers (4, 69
+//   and the Namco 108 family 206/88/95/154) the vector is a CONSTANT 0 (MultiMapper publishes it only for them), and
+//   inside them the legacy slot0/slot1 tap is a CONSTANT sentinel.  Both directions are
 //   inert BY CONSTRUCTION, not by a gate.
 //
 // COMMAND FORMAT (serialized by nes_bridge.v, S_CWSP_*):
@@ -129,11 +129,27 @@ module nes_chrwin_capture(
   wire cwin_ev1 = (cwin_d1 <= cwin_d2) && (cwin_d1 <= cwin_d3) && (cwin_d1 <= cwin_dn);
   wire cwin_ev2 = !cwin_ev1 && (cwin_d2 <= cwin_d3) && (cwin_d2 <= cwin_dn);
   wire cwin_ev3 = !cwin_ev1 && !cwin_ev2 && (cwin_d3 <= cwin_dn);
+
+  // ---- THE EVICTION DECISION IS REGISTERED, THE ARRAYS MOVE ONE CYCLE LATER --
+  // The compare tree above ends in a mux over a 64-BIT payload, and that fanout
+  // was the worst path of the whole device: cwin_sl[1][2] -> cwin_w[3][0] at
+  // -4.928 ns (8 of the 20 worst paths were in here).  Splitting it costs one
+  // CLK2 and is invisible: every capture event arrives on a `ce`, the pacer
+  // guarantees >= 13 CLK2 between two of them, and the bridge only latches the
+  // arrays on tick_accept -- thousands of cycles after the last display ce.
+  // Cycle 1 (the ce) picks the victim and parks the new entry; cycle 2 applies
+  // the shifts.  cwin_ovf and the coalescence chain still update in cycle 1,
+  // because they are narrow and feed the next comparison.
+  reg        evp_v;              // an eviction is parked
+  reg [2:0]  evp_sel;            // {ev1, ev2, ev3} latched
+  reg [7:0]  evp_sl;
+  reg [63:0] evp_win;
   always @(posedge CLK) begin
     if (RST) begin
       cwin_cnt<=3'd1; cwin_ovf<=1'b0; cwin_frozen<=1'b0;
       cwin_sl[0]<=8'd0; cwin_w[0]<=64'd0;
       cwin_last_sl<=8'd0; cwin_last_win<=64'd0;
+      evp_v<=1'b0; evp_sel<=3'd0; evp_sl<=8'd0; evp_win<=64'd0;
     end else if (frame_tick) begin
       // re-seed entry0 (fallback = close-time vector) + re-arm for next frame
       cwin_frozen<=1'b0; cwin_ovf<=1'b0; cwin_cnt<=3'd1;
@@ -155,17 +171,11 @@ module nes_chrwin_capture(
           cwin_last_sl<=cwin_sl_now; cwin_last_win<=win;
         end else if (cwin_cnt >= 3'd4) begin
           cwin_ovf<=1'b1;
-          if (cwin_ev1) begin       // evict e1: shift e2/e3 down, new at [3]
-            cwin_sl[1]<=cwin_sl[2]; cwin_w[1]<=cwin_w[2];
-            cwin_sl[2]<=cwin_sl[3]; cwin_w[2]<=cwin_w[3];
-            cwin_sl[3]<=cwin_sl_now; cwin_w[3]<=win;
-            cwin_last_sl<=cwin_sl_now; cwin_last_win<=win;
-          end else if (cwin_ev2) begin
-            cwin_sl[2]<=cwin_sl[3]; cwin_w[2]<=cwin_w[3];
-            cwin_sl[3]<=cwin_sl_now; cwin_w[3]<=win;
-            cwin_last_sl<=cwin_sl_now; cwin_last_win<=win;
-          end else if (cwin_ev3) begin
-            cwin_sl[3]<=cwin_sl_now; cwin_w[3]<=win;
+          // park the decision; the arrays move next cycle (see the note above)
+          if (cwin_ev1 | cwin_ev2 | cwin_ev3) begin
+            evp_v  <=1'b1;
+            evp_sel<={cwin_ev1, cwin_ev2, cwin_ev3};
+            evp_sl <=cwin_sl_now; evp_win<=win;
             cwin_last_sl<=cwin_sl_now; cwin_last_win<=win;
           end
           // else: the new entry is the shortest strip -> dropped, chain frozen
@@ -175,6 +185,26 @@ module nes_chrwin_capture(
           cwin_cnt<=cwin_cnt+3'd1;
           cwin_last_sl<=cwin_sl_now; cwin_last_win<=win;
         end
+      end
+    end
+    // ---- cycle 2 of the eviction: apply the parked decision -----------------
+    // Runs on ANY cycle (not only a ce), so it always lands the CLK2 right
+    // after the ce that parked it -- >= 12 cycles before the next ce could
+    // possibly read the arrays, and thousands before tick_accept latches them.
+    // Placed AFTER the ce branch so that in the (impossible) event both fired
+    // in the same cycle, the apply wins -- the same last-assignment-wins
+    // discipline the rest of this file uses.
+    if (evp_v & ~RST) begin
+      evp_v <= 1'b0;
+      if (evp_sel[2]) begin          // evict e1: shift e2/e3 down, new at [3]
+        cwin_sl[1]<=cwin_sl[2]; cwin_w[1]<=cwin_w[2];
+        cwin_sl[2]<=cwin_sl[3]; cwin_w[2]<=cwin_w[3];
+        cwin_sl[3]<=evp_sl;     cwin_w[3]<=evp_win;
+      end else if (evp_sel[1]) begin
+        cwin_sl[2]<=cwin_sl[3]; cwin_w[2]<=cwin_w[3];
+        cwin_sl[3]<=evp_sl;     cwin_w[3]<=evp_win;
+      end else begin
+        cwin_sl[3]<=evp_sl;     cwin_w[3]<=evp_win;
       end
     end
   end

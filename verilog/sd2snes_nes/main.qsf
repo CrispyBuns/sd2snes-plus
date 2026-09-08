@@ -534,6 +534,7 @@ set_global_assignment -name VERILOG_FILE nes_bridge.v
 set_global_assignment -name VERILOG_FILE nes_split_capture.v
 set_global_assignment -name VERILOG_FILE nes_chrsplit_capture.v
 set_global_assignment -name VERILOG_FILE nes_chrwin_capture.v
+set_global_assignment -name VERILOG_FILE nes_ppusplit_capture.v
 set_global_assignment -name VERILOG_FILE nes.v
 set_global_assignment -name VERILOG_FILE cpu.v
 set_global_assignment -name VERILOG_FILE MicroCode.v

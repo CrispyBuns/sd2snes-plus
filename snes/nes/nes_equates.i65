@@ -14,7 +14,8 @@
 /* ------------------------------------------------------------------ */
 /* Control block -- janela snescmd, banco 0 (NES-BRIDGE-SPEC SS3.3).
  * REALOCADO $2A00 -> $2BD0 (bloco $2BD0-$2BDF; offsets internos +0x00..+0x0E
- * IDENTICOS) na rodada final do RTL da bridge: $2A00-$2A0F e' o MCU_CMD/
+ * IDENTICOS; +0x0F = NES_DBG_REND, byte de debug do renderer -> NDBG, ultimo
+ * byte livre do bloco) na rodada final do RTL da bridge: $2A00-$2A0F e' o MCU_CMD/
  * MCU_PARAM do protocolo SNES<->MCU do fork (src/snes.h) -- o decode antigo
  * o sombreava e TRAVAVA o handshake do menu (wedge confirmado em hardware,
  * corrigido no RTL). NAO voltar pra $2A00. NES_CTRL_GO final = $2BDE. */
@@ -43,6 +44,9 @@
                                              * re-zera na bridge -- nao precisa re-zerar aqui.
                                              * So' o transporte DEVICE escreve; o harness nao
                                              * tem control block (no-op la'). */
+#define NES_DBG_REND       NES_CB_BASE+$0F  /* 1B: byte de debug do renderer -> NDBG +31 (applies de CGRAM em
+                                             * nes_apply_vblank; bit 7 = o DMA terminou fora do vblank). Ultimo
+                                             * byte livre do bloco (instrumento do Lote 2). */
 
 /* MCU_CMD do protocolo SNES<->MCU do fork (snescmd BRAM $2A00, src/snes.h
  * SNESCMD_MCU_CMD -- o MESMO byte que o control block foi movido para NAO
@@ -70,6 +74,26 @@
                                * proxima; entrada 0 = inicio do display.
                                * Vira tabela HDMA de BG1HOFS (ver
                                * nes_handle_splits/nes_apply_vblank). */
+#define CMD_PPU_SPLITS   $16  /* v3.3 (Fase 3) raster-split do PAR
+                               * {PPUCTRL bit4, codigo de nametable}:
+                               * 2+2c B -- hdr(1: b7=ovf, [3:0]=cnt) +
+                               * cnt x [scanline(1) payload(1)], com
+                               * payload = {3'b0, b4, ntcode[3:0]}.
+                               * ntcode[k] = pagina FISICA da CIRAM (0/1) do
+                               * quadrante logico k (k=0:$2000 .. 3:$2C00);
+                               * os 4 classicos sao 0x0=1A 0xF=1B 0xA=V 0xC=H.
+                               * SNAPSHOT ABSOLUTO por entrada (mesmo
+                               * invariante do $13/$15). ⚠️ cnt == 1 e' LEGAL
+                               * e ACONTECE (l3_finallap, 1497/1500 frames --
+                               * o gate de emissao tem uma 2a clausula: codigo
+                               * NAO-classico com cnt 1); nenhum laco pode
+                               * assumir cnt >= 2 como no $11/$13/$15.
+                               * TIER 1: o renderer PARSEIA e GUARDA, mas a
+                               * decisao do frame vem do FRAME_HDR.flags[5:4],
+                               * que a bridge passou a amostrar no INICIO DO
+                               * DISPLAY -- e' o que conserta Cosmo Carrier e
+                               * Dragon Buster (o defeito deles era o arranjo
+                               * de FECHAMENTO). */
 #define CMD_PALETTE      $20  /* 2+2c B: count(1) [idx(1) nescol(1)]xcount */
 #define CMD_PALETTE_FULL $21  /* 33B: nescol(1)x32 */
 #define CMD_NT_RUN       $30  /* 4+len B: nt_off(2) len(1) data(len) */
@@ -95,8 +119,9 @@
                                * O par de 4KB do $12 e' caso PARTICULAR deste
                                * vetor. Posicao canonica (CONTRATO DURO, design
                                * SS3.4): offset 18 do frame, IMEDIATAMENTE apos o
-                               * $12 (offset 14), INCONDICIONAL em mapper 4 e
-                               * AUSENTE em qualquer outro mapper.
+                               * $12 (offset 14), INCONDICIONAL nos mappers de
+                               * vetor de janela (4, 69 e a familia Namco 108:
+                               * 206/88/95/154) e AUSENTE em qualquer outro.
                                * flags: RESERVADO -- o renderer NAO le nenhum bit
                                * (as janelas ja chegam normalizadas; ler o
                                * invert aqui seria derivar duas vezes, a licao
@@ -354,6 +379,35 @@
 #define NES_CHR_HALF_BG_WORD    $0800  /* +2048 words = +4KB p/ PT1 (BG 2bpp) */
 #define NES_CHR_HALF_OBJ_WORD   $1000  /* +4096 words = +8KB p/ PT1 (OBJ 4bpp) */
 /* tile-base staged por slot (BG12NBA/OBSEL) */
+/* v3.3 (Fase 3 SS4.2) -- REGIAO SWAP: o espelho da regiao CORRENTE com as
+ * duas METADES de 4 KB TROCADAS, em words $3000-$3FFF (BG1 field 3, a unidade
+ * de BG12NBA que estava livre no mapa de VRAM).
+ *
+ * POR QUE ELA EXISTE. O BG12NBA so' anda em passos de 8 KB (512 tiles 2bpp),
+ * entao "pular 256 tiles" por HDMA -- que e' o que uma faixa com PPUCTRL bit4
+ * diferente pede -- e' IMPOSSIVEL. Com
+ *     corrente ($1000/$2000) = [ metade0 | metade1 ]
+ *     SWAP     ($3000)       = [ metade1 | metade0 ]
+ * o tilemap continua convertido com bit4_ref*256 embutido no indice e a faixa
+ * divergente so' troca o BG12NBA: indexar [m1|m0] por bit4_ref*256 + t devolve
+ * exatamente (1-bit4_ref)*256 + t da regiao natural -- vale para os DOIS
+ * valores de bit4_ref, entao NUNCA ha' re-bake de tilemap.
+ *
+ * A SWAP e' preenchida por um LOADER PROPRIO em slice (nes_chr_dma_swap_*),
+ * NUNCA pelo full-service: sao 8 KB (so' o plano de BG -- o OBSEL e' estatico
+ * e nao segue faixa), e enfia-los no full de 12 KB levaria o handler de ~74
+ * para ~97 scanlines e o INV-FULLV de 2 para 3. Ate' ela ficar valida, a
+ * faixa divergente usa o NBA estatico = comportamento de hoje (auto-cura, sem
+ * frame preto). LIMITACAO DECLARADA: existe UMA regiao SWAP, e ela espelha a
+ * regiao que nes_swap_reg nomeia. */
+#define NES_CHR_SWAP_BG_WORD    $3000
+/* metade ALTA da SWAP (= onde a metade PT0 da regiao natural e' espelhada).
+ * Constante PROPRIA e nao a soma NES_CHR_SWAP_BG_WORD+NES_CHR_HALF_BG_WORD:
+ * o snescom recusa uma expressao com '+' como parametro imediato. */
+#define NES_CHR_SWAP_BG_H1_WORD $3800
+#define NES_CHR_BG12NBA_SWAP    $03
+#define NES_CHR_DMA_REG_SWAP    $02  /* 3o valor de nes_chr_dma_reg */
+
 #define NES_CHR_BG12NBA_SLOT0   $01
 #define NES_CHR_BG12NBA_SLOT1   $02
 #define NES_CHR_OBSEL_SLOT0     $02
@@ -466,6 +520,10 @@
 #define NES_CHRW_CTRL_SPR   $08    /* PPUCTRL b3: pattern table dos sprites */
 #define NES_CHRW_CTRL_BG    $10    /* PPUCTRL b4: pattern table do BG */
 #define NES_CHRW_CTRL_8X16  $20    /* PPUCTRL b5: sprites 8x16 (mata o corte) */
+/* Os UNICOS bits de PPUCTRL que o nes_chrw_needs le. O fast-skip do $15
+ * compara PPUCTRL por esta mascara: o resto (nametable select, incremento,
+ * NMI enable) muda TODO frame num jogo com scroll e zerava o cache. */
+#define NES_CHRW_CTRL_MASK  $38
 /* Ate' quantas janelas divergentes ainda valem carga IN-PLACE na regiao
  * CORRENTE (slice, sem frame preto). Acima disso e' TRANSICAO DE TELA: vai
  * pra regiao NAO-corrente com forced-blank (1 frame escuro limpo), a mesma
@@ -640,6 +698,16 @@
  * PPU descartaria). Um descritor cujo custo passa de VB_LINES nao cabe em
  * vblank NENHUM (2 + (nt*9)>>5 > 36  <=>  nt >= 125): esse escala pra
  * forced-blank = o despejo. */
+/* v3.4 -- TETO DA FATIA DO REBUILD TOTAL COM A ESCRITA DUPLA ARMADA. Com a
+ * regiao SWAP mantida por escrita dupla cada tile custa 64 B de DMA em vez
+ * de 48, e a fatia de NES_CHRQ_TILES_MAX (192) passa a estourar UM FRAME
+ * dentro da NMI. Nada mascara NMI no rebuild, entao o vblank seguinte
+ * RE-ENTRA e a pilha corre -- foi medido no harness: S saiu de $1FFC para
+ * $6A50 e o PC foi parar em open bus ($004040). E' a MESMA recursao sem
+ * fundo que o fatiamento do rebuild existe para matar, so' que empurrada
+ * pelos bytes a mais. 64 = o mesmo teto do NES_CHRFD_SLICE, que o bloco do
+ * despejo rapido ja' orca em ~0,64 frame por NMI. */
+#define NES_CHRQ_RB_TILES_DW 64
 #define NES_CHRQ_V_MIN      225
 #define NES_CHRQ_V_LIMIT    261
 #define NES_CHRQ_VB_LINES   36     /* = V_LIMIT - V_MIN */

@@ -11,7 +11,7 @@ CORE = nes
 # which were the SGB video/VRAM/OAM/HRAM pipeline, not applicable to a
 # CPU-only core).
 VSRC = address.v dac.v dcm.v main.v mcu_cmd.v msu.v sd_dma.v spi.v \
-       nes_wrap.v nes_bridge.v nes_split_capture.v nes_chrsplit_capture.v nes_chrwin_capture.v nes.v cpu.v MicroCode.v ppu.v apu.v mmu.v compat.v
+       nes_wrap.v nes_bridge.v nes_split_capture.v nes_chrsplit_capture.v nes_chrwin_capture.v nes_ppusplit_capture.v nes.v cpu.v MicroCode.v ppu.v apu.v mmu.v compat.v
 VHSRC =
 
 HEADER = config.vh

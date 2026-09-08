@@ -46,19 +46,23 @@
 //     quartus_map: both arrays uninfer (Info 276007) and the 2x8KiB mailbox
 //     falls back to ~131k FFs => Error 276003 aborts the fit.  The window read
 //     is therefore one dedicated q-register PER buffer + comb mux AFTER them
-//     (see "window read" block).  ciram/ntdirty/oam and the v2.4 CHR ring
-//     (chrbuf/chrdsc) already follow the sync-read template and infer.
+//     (see "window read" block).  ciram/ntdirty/oam and the v2.7 CHR arrays
+//     (chrmem/chrdsc/chrpend) already follow the sync-read template and infer.
 //   * `pal` (32x6 = 192 FFs) is DELIBERATELY left as an uninferred register
 //     array: same acceptable pattern as ppu.v's oam/sprtemp/palette arrays,
 //     uninferred since Fase -1.  Its READ is nonetheless REGISTERED (pal_q,
 //     request/consume S_PAL*_RD/_WR pair) -- see the SERIALIZER TIMING note.
 //
-// CHR-RAM DELIVERY (v2.6, the Gate 2.4 field fix): CMD_CHR_RUN 0x41 is
-// AT-LEAST-ONCE.  The payload ring is held until the ACK proves the frame was
-// applied and a recovery frame re-emits whatever is unconfirmed; a run is
-// idempotent at the renderer (shadow, last-wins).  Full derivation, capacity
-// numbers and the byte-identity argument: the ACK-GATED DRAIN block next to the
-// ring pointers.  Nothing about it is visible to the byte-exact golden gate.
+// CHR-RAM DELIVERY (v2.7): CMD_CHR_RUN 0x41 is AT-LEAST-ONCE, and the store
+// behind it is an 8 KiB MIRROR of the CHR-RAM plus a 512-entry DIRTY-TILE
+// bitmap in two generations -- the ntpend algebra applied to CHR.  A recovery
+// frame re-emits the unconfirmed tiles from the mirror; a run is idempotent at
+// the renderer (shadow, last-wins), so a redundant re-emission is a no-op and
+// tiles over the per-frame budget are DEFERRED, never discarded.  This replaces
+// the v2.6 ack-gated payload RING, whose capacity valve gave up by discarding
+// (measured: 32-460 B of CHR-RAM lost for good with the consumer parked inside
+// a dump).  Full derivation and the byte-identity argument: the CHR MIRROR +
+// PENDING block.  Nothing about it is visible to the byte-exact golden gate.
 //
 // SERIALIZER TIMING (cost the second STA run -- do not regress): every value
 // that lands in mb_wdata/xor_acc must come from a REGISTER (pal_q/ciram_q/
@@ -68,9 +72,50 @@
 // (worst paths pal_dirty[*] -> xor_acc/mb_wdata).  Fixes: pal_cnt_r is
 // maintained incrementally at the tap (popcount deleted); the pal read gets a
 // request/consume state pair like every other array.  NT/OAM/CHR already
-// consumed registered reads (ciram_q/oam_q/ntdirty_q/chrbuf_q/chrdsc_q).  Extra cost:
+// consumed registered reads (ciram_q/oam_q/ntdirty_q/chrmem_q/chrdsc_q/chrpend_q).  Extra cost:
 // +1 cycle per LIST entry, 2 cycles/byte in FULL (~ +34 CLK2 worst = ~0.4us,
 // vs a ~1.27ms NES vblank -- noise).
+//
+// DEFERRED CAPTURE WRITES vs tick_accept (why the four raster capture modules
+// are allowed to land their array writes one CLK2 late).  Three of them defer:
+// nes_split_capture and nes_ppusplit_capture register their INPUTS, and
+// nes_split_capture and nes_chrwin_capture also register the array-write
+// DECISION.  Each costs at most one CLK2 between a core `ce` and the array
+// settling.  Two readers exist, and both have far more room than that:
+//
+//   1. THE NEXT `ce`, which re-reads the arrays through the eviction tree and
+//      the coalescence compare.  The nes_wrap pacer keeps consecutive `ce`
+//      pulses >= 13 CLK2 apart (derivation in the nes_wrap header).  MEASURED
+//      by run_nestest on the real SYSCLK pacer: min 15, max 23 CLK2 over 79,665
+//      pulses.  So >= 12 cycles of the floor remain after the deferral, and >= 14
+//      in practice.  run_split_equiv.sh and run_chrwin_equiv.sh turn this into
+//      an assertion rather than an argument: they sample the cycle BEFORE every
+//      ce and require the deferred module to already equal an immediate
+//      reference (6,312 samples each, zero not-settled).
+//
+//   2. THIS FILE'S S_IDLE ACCEPT, which latches snap_spl_*/snap_cspl_*/
+//      snap_cwin_*/snap_psp_* into l_spl_*/l_cspl_*/l_cwsp_*/l_psp_*.  It is
+//      much further away, and by construction rather than by luck:
+//        - the modules gate their array writes on scanline <= 239, so the last
+//          write of a frame is a tick on line 239;
+//        - nes_wrap sets frame_tick_r on the `ce` where scanline reaches 241,
+//          i.e. a full scanline of core ticks later;
+//        - only then can S_IDLE accept, and it is deferred further whenever the
+//          close coincides with an nt/chr write.
+//      NOT DIRECTLY MEASURED end to end: the only full-system testbench
+//      (tb_nestest) stops after ~1.27M CLK2 -- less than one NES frame -- so
+//      scanline never passes 233 there and tick_accept never fires.  The leg
+//      rests on the reads above, not on a measurement; if that ever needs
+//      closing, it wants a rendering ROM run for >= 2 frames through nes_wrap.
+//
+//   The OTHER direction is safe by construction and must stay that way: the
+//   capture modules take their frame_tick from tick_accept, and this FSM sets
+//   tick_accept in the SAME cycle it latches the arrays.  Both are non-blocking,
+//   so the latch reads the pre-reseed arrays; the reseed then lands two cycles
+//   later (one for the tick_accept register, one for the module's own input
+//   pipeline).  Reseeding on the raw frame_tick instead threw the entry list
+//   away before this FSM read it -- measured as a whole CMD_CHR_SPLITS8 lost in
+//   l3_minelvaton frame 228.
 //////////////////////////////////////////////////////////////////////////////////
 
 module nes_bridge(
@@ -164,7 +209,7 @@ module nes_bridge(
   input         snap_cspl_ovf,    // >4 changes this frame: evicted, flag it
   input         snap_cspl_poison, // frame invalidated (CHR mode changed mid-frame)
   input  [31:0] snap_cspl_sl,     // 4x scanline[7:0]
-  input  [31:0] snap_cspl_bank,   // 4x s0_bank[7:0]
+  input  [63:0] snap_cspl_bank,   // 4x {s1_eff[7:0], s0_bank[7:0]}
 
   // ---- v2.5 CHR WINDOW VECTOR, mapper 4 / MMC3 (CMD_CHR_STATE8 0x14 +
   //      CMD_CHR_SPLITS8 0x15) -- ADDITIVE ---------------------------------------
@@ -174,8 +219,8 @@ module nes_bridge(
   // (chr_snap_win): window k = the physical 1KB bank the PPU fetches for CHR
   // addresses k*1024..k*1024+1023, in [k*8 +: 8].
   //
-  //   snap_chr_win_en  -- the ACTIVE mapper publishes a window vector (mapper 4
-  //                       only).  It is the ONE gate: 0x14 is emitted on EVERY
+  //   snap_chr_win_en  -- the ACTIVE mapper publishes a window vector (mappers 4,
+  //                       69 and the Namco 108 family 206/88/95/154).  It is the ONE gate: 0x14 is emitted on EVERY
   //                       frame while it is set and NEVER while it is clear, so
   //                       every frame of every mapper 0/1/2/3/7/28 game stays
   //                       byte-identical (the same additivity clause that closed
@@ -196,6 +241,58 @@ module nes_bridge(
   input         snap_cwin_ovf,    // >4 changes this frame: evicted, flag it
   input  [31:0] snap_cwin_sl,     // 4x scanline[7:0]
   input  [255:0] snap_cwin_win,   // 4x win[63:0]
+
+  // ---- Fase 3: PPU raster split (CMD_PPU_SPLITS 0x16) -----------------------
+  // K=4 (scanline, payload) entries from nes_ppusplit_capture.v, payload =
+  // {3'b0, ppuctrl[4], ntcode[3:0]}.  Three deltas vs the 0x13/0x15 ports, all
+  // deliberate:
+  //   snap_psp_frozen -- "entry 0 was captured with rendering ON".  When it is
+  //                      CLEAR the frame ran its whole display window with
+  //                      rendering off, entry 0 still holds the value seeded at
+  //                      the PREVIOUS frame_tick (a 1-frame lag), and this
+  //                      module substitutes the LIVE close-time payload.  See
+  //                      the l_psp_pay0 note at the tick.
+  //   snap_ntcode     -- the mmu's live 4-bit nametable code at the close, the
+  //                      other half of that substitution (snap_ppuctrl already
+  //                      carries the live $2000).  It is ALSO the reason
+  //                      FRAME_HDR.flags[5:4] and the 0x16 can never disagree:
+  //                      both are derived from the SAME latched byte.
+  //   no poison port  -- every {b4, ntcode} composition is interpretable, so
+  //                      there is nothing to invalidate a captured list (same
+  //                      as the 0x15 path).
+  // K is 3 here, not the 4 of the 0x11/0x13/0x15 ports, and the payload arrives
+  // in 5 bits: bits 7:5 of the serialized byte are protocol padding and are
+  // re-added at emission.  Both are area decisions taken with a measured fit --
+  // see the nes_ppusplit_capture.v header.
+  input  [2:0]  snap_psp_cnt,     // 1..3 valid entries (cnt==1 is LEGAL here)
+  input         snap_psp_ovf,     // >3 changes this frame: evicted, flag it
+  input         snap_psp_frozen,  // entry 0 seeded with rendering ON
+  input  [23:0] snap_psp_sl,      // 3x scanline[7:0]
+  input  [14:0] snap_psp_pay,     // 3x payload[4:0]  (bits 7:5 are padding)
+  input  [3:0]  snap_ntcode,      // live nt_snap_code at the frame close
+
+  // ---- Frame-close ACCEPT pulse (feeds the raster capture modules) ---------
+  // The bridge does NOT latch snap_* on the raw frame_tick: it latches on the
+  // ACCEPT in S_IDLE, which is additionally gated on !nt_rmw && !nt_we &&
+  // !chr_we (a CIRAM/CHR-RAM write landing on the same cycle would snapshot the
+  // ring pointers before that byte's bump).  Those taps fire on exactly the
+  // cycle a game writes, and a frame close CAN coincide with one, so the accept
+  // is routinely deferred 1-2+ cycles past the tick.
+  //
+  // The capture modules used to reseed on the RAW frame_tick, so in a deferred
+  // frame they had ALREADY thrown their entry list away by the time the bridge
+  // read it -- the list collapsed to the reseeded cnt==1 and the whole command
+  // vanished for that frame.  That is a REAL, MEASURED loss, not a theoretical
+  // one: l3_minelvaton_jp_gameplay frame 228 drops its CMD_CHR_SPLITS8 (0x15,
+  // 20 bytes) in the end-to-end run_maptap gate while the simulator emits it.
+  // bridge_sim cannot see the class at all -- it models the tick as an atomic
+  // copy, with no accept and no tap collisions.
+  //
+  // So the modules are reseeded from THIS pulse instead.  It is registered (one
+  // cycle after the accept) on purpose: the bridge has then provably already
+  // sampled the arrays, and no combinational path is created from nt_we/chr_we
+  // into the capture modules.
+  output reg    tick_accept,
 
   // ---- Control block outputs ----
   output reg [15:0] frame_seq_o,
@@ -227,6 +324,10 @@ module nes_bridge(
   // ---- Joypad (deliverable f) ----
   input  [15:0] ctrl_p1_i,
   input  [15:0] ctrl_p2_i,
+  // Core-tick qualifier for the joypad RELOAD (see the joypad block).  Tie 1'b1
+  // to get the pre-fix behaviour (reload every CLK2) -- which is what the
+  // injected-tap testbenches do, so their byte streams are unchanged.
+  input         ce_tick,
   input         joy_strobe,
   input  [1:0]  joy_clock,
   output [1:0]  joypad_data_o,
@@ -262,7 +363,7 @@ module nes_bridge(
   // v2.3 CMD_CHR_SPLITS: WHERE the CHR slot-0 bank changed inside the display.
   // ADDITIVE on top of CHR_STATE (which stays unconditional at fixed offset 14);
   // this one is emitted right after it, ONLY when cnt>=2 && !poison:
-  //   +0 0x13 | +1 hdr {ovf, 4'd0, cnt[2:0]} | then cnt x [scanline bank]
+  //   +0 0x13 | +1 hdr {ovf, 4'd0, cnt[2:0]} | then cnt x [scanline s0 s1]
   // Entry 0 = the bank at display start; each entry is valid until the next
   // entry's scanline (the last one until scanline 240).  The renderer
   // raster-splits CHR via HDMA $210B from this list and still reconciles the
@@ -290,15 +391,35 @@ module nes_bridge(
   //                          the next entry's scanline (the last until 240).
   //
   // THE TWO HARD RULES, and how each one is enforced structurally:
-  //   (1) 0x14/0x15 NEVER appear outside mapper 4  -- snap_chr_win_en is the
-  //       only path into S_CWST, and the mmu drives it from flags[7:0]==4.
-  //   (2) 0x13 NEVER appears IN mapper 4           -- twice over: the legacy
-  //       chr_snap_s0/s1 tap is a CONSTANT for mapper 4 (so its capture can
+  //   (1) 0x14/0x15 NEVER appear outside a window-vector mapper (4, 69, 206/88/95/154) --
+  //       snap_chr_win_en is the only path into S_CWST, and the mmu drives it
+  //       from flags[7:0] (4, 69 and the Namco 108 family 206/88/95/154).
+  //   (2) 0x13 NEVER appears IN those mappers      -- twice over: the legacy
+  //       chr_snap_s0/s1 tap is a CONSTANT for them (so its capture can
   //       never reach cnt>=2, see mmu.v), AND the state chain below routes
   //       S_CHRST -> S_CWST -> S_CWSP_* -> S_SPL_*, never touching S_CSPL_OP
   //       when the window vector is enabled.
   localparam [7:0] OP_CHR_STATE8 = 8'h14;
   localparam [7:0] OP_CHR_SPLITS8= 8'h15;
+  // Fase 3 -- CMD_PPU_SPLITS 0x16 (NES-MIDFRAME-SPEC.md SS2.1)
+  //   16 hdr cnt x [scanline payload], hdr = {ovf, 4'd0, cnt[2:0]},
+  //   payload = {3'b0, ppuctrl[4], ntcode[3:0]}.  Canonical position:
+  //   immediately AFTER the 0x11, in the raster block (NOT a fixed offset --
+  //   only 0x12/0x14 are; the parser is per-opcode).
+  //
+  //   EMISSION GATE, and it is the ONE place this command differs from its
+  //   siblings 0x11/0x13/0x15:
+  //        emit  <=>  cnt >= 2   OR   entry0's code is NOT classic
+  //   The second clause exists because flags[5:4] has only TWO bits: a frame
+  //   whose code is non-classic but STATIC (mapper 118 with chr_a12_invert, the
+  //   (1,0) of mapper 95, Namco 163's independent quadrant registers) has no
+  //   other channel at all.  So cnt==1 IS a legal 0x16 -- measured on
+  //   l3_finallap, 1497/1500 frames.  Every opcode walker must handle it.
+  //
+  //   PRECEDENCE: while a 0x16 is present it is AUTHORITATIVE and both
+  //   FRAME_HDR.flags[5:4] and CMD_REGS.ppuctrl[4] are to be ignored (the same
+  //   rule as "0x14 present => ignore the 0x12").
+  localparam [7:0] OP_PPU_SPLITS = 8'h16;
   localparam [7:0] OP_PALETTE   = 8'h20;
   localparam [7:0] OP_PAL_FULL  = 8'h21;
   localparam [7:0] OP_NT_RUN    = 8'h30;
@@ -326,8 +447,8 @@ module nes_bridge(
   // v2.4 CHR-RAM capture ring (replaces the 512-entry dirty bitmap + its pend
   // generations, all three of which became dead the moment 0x41 started
   // carrying data -- see the CHR RING block below for the sizing argument).
-  localparam CB_SZ     = 8192;   // payload ring, bytes  (power of 2: free wrap)
-  localparam DSC_N     = 256;    // run-descriptor ring, entries
+  localparam CB_SZ     = 8192;   // CHR-RAM mirror, bytes (the whole address space)
+  localparam DSC_N     = 256;    // run-descriptor ring, entries (ONE frame's worth)
   // MAILBOX CAPACITY VALVE for the CHR drain (v2.6).  A mailbox buffer is 8192
   // bytes and wptr is 13 bits: it WRAPS silently.  Before ack-gating, one
   // frame could only ever carry one frame's worth of CHR (<=2120 B measured,
@@ -342,124 +463,78 @@ module nes_bridge(
   //   + 257 (OAM) + 2 (FRAME_DONE) = 518  =>  CHR_WSTOP <= 8192-518 = 7674.
   // 7600 leaves 74 B of slack.  INERT for every golden (max frame 2721 B).
   localparam [12:0] CHR_WSTOP = 13'd7600;
-  // RETRANSMISSION WINDOW -- the ONLY thing this fix is allowed to bound.
+  // ---- CHR-RAM RE-SEND BUDGET (v2.7: MIRROR + DIRTY-TILE BITMAP) -----------
   //
-  // The v2.6b cut capped the DRAIN itself (CHR_BUDGET bytes of 0x41 per frame).
-  // That was wrong in a way no skip scenario could show: with a PERFECT lockstep
-  // consumer (lag<=1, zero skips, zero recoveries) a game writing more than the
-  // cap per frame has its surplus held back every frame, the ring fills, and the
-  // tap DROPS -- measured 6585 drops at 2500 B/frame, 26685 at 3000, 49955 at
-  // 3700, all with cb_ovf set, while the same RTL with the cap removed dropped
-  // ZERO.  And the "margin" over the corpus peak was an illusion: 2120 B/frame
-  // is a PLATEAU (megaman1_usa and megaman2_ultra, attract AND gameplay, all
-  // exactly 2120 = a saturating value), not a tail, so 2176 was 2.6% above a
-  // number that does not describe the maximum of anything.
+  // WHAT REPLACED WHAT.  Until v2.6 the CHR payload lived in a CIRCULAR RING
+  // and retransmission meant HOLDING that ring until an ACK proved delivery.
+  // That is why this file used to carry RETX_WINDOW / RETX_CHUNK / RETX_DSC /
+  // RING_HIWATER / DSC_HIWATER, a committed tail (cb_cp/dsc_cp), an 8-deep
+  // publish history, chain_broken, a rewind and an all-or-nothing TRIM:
+  // CAPACITY, not policy, was the thing being managed, and the trim's GIVE-UP
+  // was a PERMANENT loss of CHR-RAM -- the one piece of state that had no
+  // idempotent mirror.  Measured on the real trace with the consumer parked
+  // INSIDE a 512-tile dump (Fantasy Zone JP, mapper 93, rendering off,
+  // rtl-tb/run_chrburst.sh): 245 B lost for good at seq 830 x 30 frames before
+  // the ack_win_q fix, and still 32 B at 840 x 30, 245 B at 880 x 30 and 460 B
+  // at 880 x 60 after it -- all of them the trim giving up.
   //
-  // The drain is therefore UNCAPPED again -- byte for byte the v2.5 behaviour
-  // for bytes that have never been emitted.  What is bounded instead is the
-  // RETRANSMISSION WINDOW: the span of already-emitted-but-unconfirmed payload
-  // the bridge is willing to keep for a re-send.  Every tick TRIMS it back to
-  // this size (see chr_trim_w), which buys three properties at once:
-  //   * a recovery frame costs at most RETX_CHUNK extra bytes on top of a normal
-  //     v2.5 frame (the WINDOW is what may be retained, the CHUNK is what may be
-  //     re-sent in one frame) -- the cascade ("NUNCA full-storm") stays bounded;
-  //   * FRESH bytes are never delayed by old ones, because only the old part is
-  //     ever capped -- the head-of-line starvation that blacked out the device
-  //     cannot be expressed any more;
-  //   * ring occupancy stays bounded, so the tap keeps its room.  Do NOT trust
-  //     the tidy "window + one frame" arithmetic here: MEASURED peak occupancy
-  //     at 2200 CHR B/frame with skips is 7798 of 8184, because the drain, the
-  //     writes and the trim interleave across a whole frame rather than lining
-  //     up.  The per-cycle bound in the tap is what actually holds this, not the
-  //     arithmetic -- and the rate sweep in tb/run_chrram_skip.sh is what proves
-  //     it, point by point, instead of a paragraph asserting it.
-  // SIZING.  The window has to hold at least ONE worst frame, or it cannot
-  // re-send a single lost dump -- and the corpus figure of 2120 B/frame is a
-  // SATURATING PLATEAU (megaman1_usa and megaman2_ultra, attract and gameplay,
-  // all exactly 2120), so it is a floor on the real maximum, not a ceiling.
-  // 3072 holds one such frame with room to spare, while keeping the peak ring
-  // occupancy (window + one frame of writes) far below the 8184 the tap needs:
-  // safe up to ~5100 B/frame, i.e. more than twice the physical NES maximum.
-  // The DESCRIPTOR window is bounded separately, because scattered writes
-  // exhaust chrdsc with the payload ring nearly empty (~90 descriptors/frame
-  // measured) -- a byte-only trim leaves that mode wedged.
-  localparam [12:0] RETX_WINDOW  = 13'd3072;
-  // PER-FRAME RETRANSMISSION CHUNK.  A recovery does NOT have to re-send the
-  // whole window in one frame, and it must not: at Mega-Man rate (2200 B/frame
-  // of fresh data) a 3 KB re-send DOUBLES the frame, the renderer -- which
-  // applies ~1400 B/frame -- falls further behind, and the fix ends up losing
-  // MORE than doing nothing (measured 8192 of 8192 bytes wrong versus 5992 for
-  // the pre-fix control).  So the re-sent part is trickled: at most RETX_CHUNK
-  // bytes per frame, IN ORDER, and the committed tail advances to whatever was
-  // re-sent, so each unconfirmed byte gets a BOUNDED number of extra attempts
-  // instead of an unbounded one.  Fresh data is never delayed by more than this.
-  // TUNED BY MEASUREMENT, both directions matter:
-  //   768 -> too mean: the ordinary skip scenarios stopped healing completely
-  //          (606 and 829 bytes lost where 0 is achievable).
-  //  3072 -> too generous: at Mega-Man rate it doubled the frame and lost MORE
-  //          than the pre-fix control (8192 vs 5992).
-  //  1536 -> WRONG, and it is what the W16e field deploy shipped.  It was tuned
-  //          against tb streams that carried 140 tiles/frame with ppumask
-  //          rendering ON -- a case the NES cannot produce (the physical ceiling
-  //          with rendering on is ~24 tiles/frame; the 2120 B/frame plateau only
-  //          ever happens with the screen BLANKED) -- so the tuning optimised an
-  //          impossible operating point.
+  // The store is now ABSOLUTE.  chrmem is an 8 KiB MIRROR of the CHR-RAM,
+  // indexed by physical offset, so a byte can never be aged out of it; what is
+  // unconfirmed is described by a 512-entry DIRTY-TILE bitmap in TWO
+  // GENERATIONS (the ntpend algebra), and a recovery frame re-emits those tiles
+  // straight from the mirror.  There is no capacity to run out of, so there is
+  // nothing to give up: tiles over this frame's budget are DEFERRED (their bits
+  // stay set) instead of DISCARDED.
   //
-  // THE BOUND IS NOT A TUNING KNOB, IT IS ARITHMETIC ON THE CONSUMER.  The
-  // renderer stages CHR through a buffer of NES_CHRQ_TILES_MAX = 192 tiles =
-  // 3072 BYTES per frame (snes/nes/nes_equates.i65).  Past that it escalates to
-  // nes_chrq_full, a whole-shadow rebuild.  A frame carries FRESH + RETX, and
-  // fresh alone reaches the 2120 B plateau on a level-entry dump, so:
-  //     RETX_CHUNK <= 3072 - 2120 = 952
-  // 1536 breaks it by 584 B: any frame where a rewind lands on a dump is 228
-  // tiles, over the renderer's ceiling, and forces the rebuild path.  Observed
-  // in the renderer harness the moment a >192-tile frame was fed to the REAL
-  // renderer: nothing staged (dev tmax=0), nes_chrq_full=1 left pending, shadow
-  // incomplete -- and on the device, a renderer that never finishes a frame
-  // never ACKs, which is exactly the field signature (publisher alive, 6502
-  // alive, overruns advancing 1:1 with frames, zero frames consumed).
-  //  768 -> chosen: under the 952 ceiling with margin for a fresh burst above
-  //          the plateau, and a whole number of 16-byte tiles (48).
+  // PER-FRAME RE-SEND BUDGET -- ARITHMETIC ON THE CONSUMER, NOT A TUNING KNOB.
+  // The renderer stages CHR through NES_CHRQ_TILES_MAX = 192 tiles = 3072 BYTES
+  // per frame (snes/nes/nes_equates.i65).  Past that it escalates to
+  // nes_chrq_full, a whole-shadow rebuild -- and a renderer that never finishes
+  // a frame never ACKs, which is exactly the W16e field signature (publisher
+  // alive, 6502 alive, overruns advancing 1:1 with frames, zero frames
+  // consumed).  A frame carries FRESH + RESEND, and fresh alone reaches the
+  // 2120 B plateau on a level-entry dump, so:
+  //     resend_allowance  =  (CHR_TILE_CAP - fresh_tiles_this_frame) * 16
+  // which is 952 B at the 2120 B plateau and the whole 3072 when the dump is
+  // over -- the arithmetic the ring-era RETX_CHUNK approximated with a constant.
   //
   // *** ABI LOCKSTEP -- snes/nes/nes_equates.i65 NES_CHRQ_TILES_MAX ***
-  // This is a two-sided contract in the same sense as memory.h <-> memmap.i65:
-  //     fresh_plateau (2120 B) + RETX_CHUNK  <=  NES_CHRQ_TILES_MAX * 16
+  //     CHR_TILE_CAP  ==  NES_CHRQ_TILES_MAX
   // Break it and NOTHING fails offline -- the byte-exact goldens contain no
   // retransmission at all, so they cannot see it; only the renderer notices, by
-  // escalating to a whole-shadow rebuild and never finishing a frame, i.e. by
-  // never ACKing.  That is how W16e reached silicon.  Change either side and
-  // re-check the other, and keep tb/run_retx_renderer.sh (which asserts the
-  // 3072 B/frame ceiling structurally over every generated stream) green.
-  //
-  // TWO CALIBRATIONS, so nobody reads more into this than it says:
-  //  * the rendering-ON write budget is a RANGE, 10-35 tiles/frame depending on
-  //    where in the frame the writes land -- not the single "24" figure an
-  //    earlier revision of this comment used.
-  //  * `fresh <= 2120 B` is an EMPIRICAL plateau of the corpus, NOT something
-  //    this module enforces.  A CHR-RAM game with a tighter dump loop than Mega
-  //    Man's blows the 192-tile ceiling with NO retransmission at all, so the
-  //    livelock is LATENT in the shipping v2.3 as well; W16e only lowered the
-  //    threshold that triggers it (232 -> 180 tiles of headroom).
-  // TODO (post-hardware, bundle with ack_moved and the mid-run clamp fix): make
-  // this structural instead of empirical.  Either a dynamic allowance computed
-  // at the tick, `retx_allow = 3072 - fresh_pending`, or -- the
-  // recommendation -- a HARD 3072 B/frame cap on the CHR section with DEFERRAL
-  // in the CHR_WSTOP style (the surplus keeps its place in the ring instead of
-  // being dropped).  The cap is preferred because it degrades VISIBLY through
-  // cb_ovf rather than as a silent livelock.
-  localparam [12:0] RETX_CHUNK   = 13'd768;
-  localparam [7:0]  RETX_DSC     = 8'd64;     // descriptors kept for re-send
-  // HIGH-WATER = HALF the ring, and that number is derived, not chosen: a rewind
-  // makes the next frame's slice (window + one frame) instead of (one frame), so
-  // the ring has to hold roughly TWICE what v2.5 held.  Gating the rewind at
-  // half the ring bounds post-rewind occupancy to CB_SZ/2 and leaves the other
-  // half for the frame of writes that follows -- i.e. the retransmission simply
-  // switches itself off (falling back to v2.5) at rates where the ring cannot
-  // hold two frames.  3/4 was measured to be too generous: at 2800 B/frame the
-  // slice reached 5600 on top of a 3072 window and the tap dropped 2160 bytes
-  // with cb_ovf, while v2.5 at the same rate dropped none.
-  localparam [12:0] RING_HIWATER = 13'd4096;  // CB_SZ/2
-  localparam [7:0]  DSC_HIWATER  = 8'd128;    // DSC_N/2
+  // escalating to a whole-shadow rebuild and never ACKing.  Change either side
+  // and re-check the other.
+  // The budget is DYNAMIC, not the fixed 768 an earlier cut used: it is what is
+  // left of the renderer's own per-frame ceiling after this frame's FRESH bytes.
+  // Fixed-768 was measured to be too mean on the real trace -- a level-entry
+  // dump makes the whole 512-tile bitmap pending at once, 768 B/frame is 48
+  // tiles, and the handful of recovery frames a skip produces cannot drain 512
+  // of them (run_chrburst, Fantasy Zone 820x120: 30 tiles never re-sent).  Right
+  // AFTER a dump the fresh load is ~0, so the allowance opens to the full 192
+  // and the same debt drains in three frames.  Fresh is NEVER delayed by it: the
+  // allowance is the REMAINDER, so a 192-TILE fresh frame leaves zero.
+  // (The two lines above used to say "3072 bytes", which contradicted the
+  // paragraph immediately below -- the ceiling has been in TILES since v2.8.)
+  // THE CEILING IS IN TILES, NOT BYTES (v2.8; the v2.7 byte form was an ABI bug).
+  // The renderer stages CHR through NES_CHRQ_TILES_MAX = 192 TILE DESCRIPTORS per
+  // frame (snes/nes/nes_equates.i65, consumed in nes_render.a65) -- not through
+  // 3072 bytes.  The two only agree when every touched tile is written WHOLE: a
+  // game that writes part of a tile pays a full descriptor for a fraction of the
+  // 16 bytes, so counting bytes lets the frame pass the byte test and still blow
+  // the tile ceiling (l2_senjou with rendering ON reaches 207 tiles inside 3072
+  // bytes -> ncst_overflow -> nes_chrq_drop, and the renderer's whole-shadow
+  // rebuild then HIDES the miss).  So the tap counts TILES and the allowance is
+  // what is left of the 192 after this frame's fresh capture.
+  localparam [8:0]  CHR_TILE_CAP    = 9'd192;   // == NES_CHRQ_TILES_MAX
+  // Longest re-send run, in TILES.  The 0x41 len field is ONE BYTE, so 15 tiles
+  // (240 B) is the largest whole-tile run that fits.  Keeping every re-send run
+  // tile-aligned is what lets the scan charge its budget in units of 16 without
+  // a multiplier and lets the header derive off/len by pure bit-slicing.
+  localparam [4:0]  CHR_PEND_MAXT   = 5'd15;
+  // 8 KiB of CHR-RAM / 16 B per NES tile.  This is the renderer's unit too
+  // (nes_chr_handle_run reconverts the touched TILES), so a coarser bitmap
+  // would re-send tiles the renderer would have to reconvert anyway.
+  localparam        CHR_TILES       = 512;
 
   // ============================================================ shadow memories
   //
@@ -493,82 +568,67 @@ module nes_bridge(
   reg       ntdirty1 [0:NT_SIZE-1];    // ping-pong bank 1
   reg [7:0] oam      [0:255];          // live (taps)
   reg [7:0] oam_frz  [0:255];          // frozen copy (S_CPY at tick)
-  // ============================================ CHR RING (v2.4, CMD_CHR_RUN)
+  // ================================= CHR MIRROR + PENDING (v2.7, CMD_CHR_RUN)
   // MICROARCHITECTURE (the one decision this block exists to record):
   //
-  //   chrbuf  = a CIRCULAR byte ring of the CHR-RAM payload, appended by the
-  //             tap 1 byte/cycle, drained by the serializer.
-  //   chrdsc  = a CIRCULAR ring of RUN DESCRIPTORS {off[12:0], ptr[12:0]},
-  //             ONE write, at run OPEN only.  The run's LENGTH is never stored:
-  //             it is `next_descriptor.ptr - this.ptr` (and, for the last run of
-  //             a frame, `l_cb_end - this.ptr`), so nothing has to be
-  //             back-patched and the tap never needs more than ONE write port
-  //             on either array in a cycle.  That is what keeps the tap a
-  //             single-cycle event exactly like the old dirty-bit tap -- no
-  //             micro-sequencer, no skid buffer, no assumption about how fast
-  //             the NES can hit $2007.
+  //   chrmem  = an 8 KiB MIRROR of the CHR-RAM, indexed by the mapper-resolved
+  //             PHYSICAL OFFSET.  The tap writes it unconditionally, one byte
+  //             per cycle, last-wins; the serializer reads it.  It is ABSOLUTE
+  //             state, exactly like ciram: nothing can be aged out of it, so
+  //             there is no retransmission window, no high-water and no
+  //             give-up.  It occupies the eight M9K blocks the payload ring
+  //             used to hold, so this is a re-interpretation of the same
+  //             memory, not new memory.
+  //   chrdsc  = a ring of RUN DESCRIPTORS {off[12:0], cnt[12:0]}, ONE write, at
+  //             run OPEN only.  The run's LENGTH is never stored: it is
+  //             `next_descriptor.cnt - this.cnt` (and, for the last run of a
+  //             frame, `l_cb_end - this.cnt`), where cnt is a free-running
+  //             count of accepted tap bytes.  Nothing is back-patched and the
+  //             tap never needs more than ONE write port on either array in a
+  //             cycle -- that is what keeps it a single-cycle event with no
+  //             micro-sequencer and no assumption about how fast the NES can
+  //             hit $2007.  Since v2.7 the descriptors carry ONE FRAME (they
+  //             are drained every frame); they are NOT a retransmission store.
+  //   chrpend = 512 x 2 bits, ONE ENTRY PER TILE: generations {A,B} with the
+  //             ntpend algebra (bit1 = A "sealed by the last recovery",
+  //             bit0 = B "young").  Written ONLY by the FSM -- the fresh walk
+  //             marks a tile B as it ships it (S_CRB), the pend scan does the
+  //             deliver/seal/materialise rewrite (S_CP1) -- so the array never
+  //             needs a second write port and the TAP NEVER TOUCHES IT.  That
+  //             single-writer discipline is the reason the per-frame dirty
+  //             bitmap that NT needs (ntdirty0/1, ping-ponged) does not exist
+  //             here: the descriptors already are this frame's dirty list.
   //
-  // Why not the obvious alternatives:
-  //   * 8 KiB CHR shadow + the existing tile dirty bitmap (the `ciram`+`ntdirty`
-  //     shape): 8 M9K, and only ~7 are free (fit is at 49/56) -- and the design
-  //     (SS5.4) kills the shadow on purpose.
-  //   * headers written IN-BAND into the payload ring: one memory instead of
-  //     two, but opening a run then costs 5 byte-writes = a 5-cycle sequencer
-  //     plus a skid, i.e. a timing ASSUMPTION about tap spacing.  Rejected.
-  //   * a descriptor array holding (off, len): len is only known at CLOSE, so
-  //     close+open collide on the same array in the same cycle.  Storing `ptr`
-  //     instead removes the close write entirely.
+  // WHY THE WRITE-ORDER DESCRIPTORS SURVIVE THE MIRROR (byte identity).  The
+  // golden stream emits a run's bytes AS WRITTEN, in write order; a mirror only
+  // holds the LAST value of an offset.  Measured over the whole 95 900-frame
+  // golden corpus (541 854 CHR bytes), SIX frames write the same offset twice
+  // with different values inside one frame -- battletoads 2, rockman4ex 2,
+  // metroid_deluxe_explore 1, l2_senjou 1 -- and emitting those runs from the
+  // mirror would ship the final value twice.  That is semantically identical
+  // (the renderer's 0x41 handler is last-wins over an 8 KiB shadow, so the
+  // post-frame state cannot differ) but it is NOT byte-identical.  Keeping the
+  // write-order descriptors keeps the run BOUNDARIES and the run ORDER exactly
+  // as bridge_sim/ppustate.chr_runs produces them, so the divergence is
+  // confined to those six frames instead of to every CHR-RAM frame in the
+  // corpus (which is what an address-ordered, tile-granular emission would
+  // have cost).  Do not "simplify" this into a bitmap-only encoder.
   //
-  // SIZING (chrram-study/out/*_frames.csv, 13 traces / 23 100 frames; the ring
-  // DOUBLED to 8192 in v2.6 because the drain is now ACK-GATED -- see the
-  // ACK-GATED DRAIN block for the capacity derivation):
-  //   worst single frame = 2120 payload bytes (Mega Man's screen-off dumps),
-  //   max runs/frame = 4, longest run 133 tiles; +~50-130 bytes accumulate
-  //   during the ~8k-cycle serialization => ~2250 B per unconfirmed frame.
-  //   The ring must now hold every frame published-but-not-confirmed plus the
-  //   accumulating one, so the quantity that sizes it is the worst MULTI-FRAME
-  //   window, NOT the worst frame times a guess.  Sliding sums of chr_writes
-  //   over the CHR-RAM traces (the fantasy_zone column of that study is
-  //   CHR-ROM, where chr_we never fires, so it does not count):
-  //     1 frame 2120 | 2 frames 4234 | 3 frames 6346 | 4 frames 7722
-  //   (Mega Man 1/2 refilling the whole 8 KB with the screen off).  Lag
-  //   oscillates 1<->2 in normal operation = 2-3 frames unconfirmed = <=6346 of
-  //   8184 usable; the measured 4-frame worst case still fits (7722 < 8184).
-  //   Descriptors: 4 runs + the <=255 slicing of a 2120-byte run (9 slices)
-  //   ~= 13/frame, x4 frames = 52 of 256 = 20% -- the descriptor ring did NOT
-  //   have to grow.
-  //   RESIDUAL, documented on purpose: a renderer more than ~4 frames behind
-  //   DURING a max-rate dump saturates the ring; the byte is then DROPPED, the
-  //   run is closed (so no hole ever appears INSIDE a run) and `cb_ovf` latches
-  //   into status_o[1] -- partial degradation, never a corrupt run, and still
-  //   far better than v2.5 (which lost a whole frame's CHR on ANY skip).  There
-  //   is no cheap fix above this: the fit is at 55/56 M9K, and 16 KiB would
-  //   cost 8 more.
-  // M9K BUDGET (check this against the fitter report -- the fit was at 51/56
-  // AFTER v2.4): +4 (chrbuf 4096->8192 x8 = +32768 b); chrdsc widens 25->26 b
-  // and still costs ONE block (256x36 config) => NET +4 -> ~55/56.  If
-  // quartus_map ever refuses to infer the 26-bit-wide chrdsc as RAM (Info
-  // 276007 -> a 6656-FF register array), split it into two arrays (256x13 off
-  // + 256x13 ptr) and pay one extra M9K; do NOT mux two async array reads in
-  // front of chrdsc_q.
-  reg [7:0]  chrbuf [0:CB_SZ-1];   // M9K (8 blocks)
-  reg [25:0] chrdsc [0:DSC_N-1];   // M9K (1 block): {off[12:0], ptr[12:0]}
-  // ---- v2.6 publish HISTORY: where the drain stopped for the last 8 published
-  // frames, indexed by seq[2:0].  Tiny register arrays (8x13 + 8x8 + 8x1 = 176
-  // FFs), read combinationally by seq index and landing in a REGISTER (cb_cp /
-  // dsc_cp) -- not in the mb_wdata/xor_acc cone, so the SERIALIZER TIMING rule
-  // is untouched.
-  // DEPTH 8, NOT 4 -- this cost a FIELD FAILURE (v2.6 first cut, Mega Man: black
-  // screen, +63 overruns/s).  With depth 4 the commit needed lag<=3 while
-  // lost_r ARMS A RECOVERY at lag>=3, so a renderer sitting at lag>=4 -- the
-  // normal regime during a level-entry CHR dump -- could never commit anything:
-  // every frame rewound to the same frozen tail and re-shipped the same oldest
-  // bytes, the new writes never got out (head-of-line starvation) and cb_ovf
-  // stayed CLEAR, so the breadcrumb showed nothing.  The commit window must
-  // extend BEYOND the recovery trigger, not stop exactly at it.
-  reg [12:0] hist_cb  [0:7];
-  reg [7:0]  hist_dsc [0:7];
-  reg        hist_cov [0:7];       // this frame's drain STARTED at the committed tail
+  // SIZING.  The descriptors now only have to hold ONE frame plus whatever
+  // CHR_WSTOP defers: the worst measured is ~90/frame (scattered writes) out of
+  // 256, where v2.6 had to share the same 256 with several frames of
+  // unconfirmed history.  A descriptor overflow no longer loses the DATA -- the
+  // mirror has it -- it drops the RUN, latches cb_ovf for the breadcrumb and
+  // sets chr_forceall, which makes the next pend scan mark EVERY tile pending
+  // so the next recovery re-ships the whole mirror, 48 tiles per frame.
+  // M9K BUDGET (measured in output_files/main.fit.rpt, 55/56 before this
+  // change): chrmem reuses chrbuf's eight blocks, chrdsc keeps its one
+  // (256x26 in a 256x36 config), chrpend takes the last free one (512x2).  If
+  // quartus_map ever refuses to infer one of them, do NOT mux two async array
+  // reads in front of its q-register -- see M9K INFERENCE in the header.
+  reg [7:0]  chrmem  [0:CB_SZ-1];      // M9K (8 blocks): the CHR-RAM mirror
+  reg [25:0] chrdsc  [0:DSC_N-1];      // M9K (1 block): {off[12:0], cnt[12:0]}
+  reg [2:0]  chrpend [0:CHR_TILES-1];  // M9K (1 block): {D,A,B} per tile
   // PENDING accumulators (chain-breaker; cost a hardware iteration -- see the
   // LOSS THRESHOLD note): union of the dirty bits of every serialized-but-not-
   // yet-confirmed frame.  A loss no longer emits a FULL frame (~2.4KB, whose
@@ -584,19 +644,19 @@ module nes_bridge(
   // OLD behavior, never worse.  Boot (~saw_ack) still uses true FULL frames.
   // TWO GENERATIONS per cell (bit1 = A "sealed", bit0 = B "young") -- see the
   // GENERATION note at the pend registers below.
-  // CHR has NO pend generation: the payload ring IS the pending store -- see
-  // the ACK-GATED DRAIN block below (v2.6, plan (b) of the v2.4 note, taken
-  // after Gate 2.4 hardware showed Mega Man (mapper 2, CHR-RAM) with a
-  // permanently corrupt background and 79 overruns in ~33 s: every lost frame
-  // dropped its CHR bytes for ever, and a ONE-SHOT boot dump never comes back).
-  // Diagnosis first: status_o[1] (cb_ovf) says "ring full", NOT "frame lost".
+  // SINCE v2.7 CHR SHARES THIS ALGEBRA (chrpend above), including the valid
+  // flags pend_a_valid/pend_valid and their tick latches pend_avf/pend_bvf.
+  // The one CHR-specific term is DELIVERY: the pend scan has a per-frame byte
+  // budget, and a tile it did not deliver must NOT be sealed into A -- sealing
+  // means "this recovery carried it", and a later confirm would then drop a
+  // tile that was never sent.  Un-delivered tiles are demoted to B instead, so
+  // they survive the A-kill and go out in the next recovery.
   reg [1:0] ntpend  [0:NT_SIZE-1];
   reg [7:0] mbox0   [0:8191];   // M9K (inferred; see M9K INFERENCE in the header)
   reg [7:0] mbox1   [0:8191];   // M9K (inferred)
   reg [5:0] pal     [0:31];     // register array ON PURPOSE (192 FFs); read via pal_q reg
 
   integer k, kk;
-  integer rk;
   initial begin
     for (k=0;k<NT_SIZE;k=k+1)   begin ciram[k]=8'h00; ntdirty0[k]=1'b0; ntdirty1[k]=1'b0; ntpend[k]=2'b00; end
     for (k=0;k<256;k=k+1)       begin oam[k]=8'h00; oam_frz[k]=8'h00; end
@@ -607,9 +667,9 @@ module nes_bridge(
     // runs.  iverilog does not care.  Clearing the 8192-byte ring therefore has
     // to be a NEST (64 x 128), not a flat sweep.
     for (k=0;k<CB_SZ/128;k=k+1)
-      for (kk=0;kk<128;kk=kk+1) chrbuf[k*128+kk]=8'h00;
+      for (kk=0;kk<128;kk=kk+1) chrmem[k*128+kk]=8'h00;
     for (k=0;k<DSC_N;k=k+1)     chrdsc[k]=26'd0;
-    for (k=0;k<8;k=k+1)         begin hist_cb[k]=13'd0; hist_dsc[k]=8'd0; hist_cov[k]=1'b0; end
+    for (k=0;k<CHR_TILES;k=k+1) chrpend[k]=3'b000;
     for (k=0;k<32;k=k+1)        pal[k]=6'h00;
   end
 
@@ -694,24 +754,37 @@ module nes_bridge(
   // WIDTH: 6 bits since v2.3 (the CMD_CHR_SPLITS states pushed the count past
   // 32).  Every state literal below MUST stay 6'dN -- a leftover 5'dN silently
   // zero-extends in comparisons but truncates in assignments.
-  // v2.5 added FIVE states (S_CWST + S_CWSP_*), taking the highest literal to
-  // 6'd43 of the 63 a 6-bit register holds -- still 20 spare, no width change.
+  // v2.5 added FIVE states (S_CWST + S_CWSP_*), then v2.7 the five S_CP*
+  // (6'd44..48) and Fase 3 the four S_PSP_* (6'd49..52), taking the highest
+  // literal to 6'd52 of the 63 a 6-bit register holds -- still 11 spare, no
+  // width change.
   localparam [5:0]
     S_IDLE  = 6'd0,  S_SETUP = 6'd1,  S_HDR  = 6'd2,  S_REGS = 6'd3,
     S_PAL   = 6'd4,  S_NTA   = 6'd5,  S_NTB  = 6'd6,  S_NTHDR= 6'd7,
     S_NTDA  = 6'd8,  S_NTDB  = 6'd9,  S_CBANK= 6'd10,
     // v2.4 CMD_CHR_RUN emission (replaces the old S_CA/S_CB/S_CHDR dirty-bitmap
     // scan): walk the frozen slice of the descriptor ring, then stream each
-    // run's bytes straight out of the payload ring.  Same request/consume
+    // run's bytes out of the CHR mirror (v2.7; the payload ring before that).
+    // Same request/consume
     // shape as S_NTA/S_NTB and S_NTDA/S_NTDB (every array read is REGISTERED
     // and mb_wdata only ever sees a register -- SERIALIZER TIMING).
     S_CR0   = 6'd11,  // descriptor cursor test; request chrdsc[dsc_i]
-    S_CR1   = 6'd12,  // consume descriptor -> cur_coff/cur_cptr; advance dsc_i
+    S_CR1   = 6'd12,  // consume descriptor -> cur_coff/cur_ccnt; advance dsc_i
     S_CR2   = 6'd13,  // wait state: chrdsc[dsc_i+1] read registers
-    S_CR3   = 6'd35,  // consume NEXT ptr -> cur_clen; park cb_rp at cur_cptr
+    S_CR3   = 6'd35,  // consume NEXT cnt -> cur_clen; park chr_ra_r at cur_coff
     S_CRH   = 6'd36,  // emit 41 off_lo off_hi len
-    S_CRA   = 6'd37,  // request chrbuf[cb_rp]
-    S_CRB   = 6'd38,  // emit payload byte
+    S_CRA   = 6'd37,  // request chrmem[chr_ra_r]
+    S_CRB   = 6'd38,  // emit payload byte (from the mirror)
+    // v2.7 CHR PENDING RE-SEND emission (tile-granular scan of chrpend, payload
+    // from chrmem).  Same request/consume shape as S_NTA/S_NTB: S_CP0 sets the
+    // address, S_CP1 consumes the registered read and does the ONE rewrite of
+    // that cell.  Runs against the 0x41 opcode the fresh walk uses, so the
+    // renderer sees no new command.
+    S_CP0   = 6'd44,  // tile cursor test; request chrpend[cp_i]
+    S_CP1   = 6'd45,  // consume {A,B}; deliver/seal/materialise; extend run
+    S_CPH   = 6'd46,  // emit 41 off_lo off_hi len for the tile run
+    S_CPA   = 6'd47,  // request chrmem[chr_ra_r]
+    S_CPB   = 6'd48,  // emit payload byte
     S_OAMA  = 6'd14, S_OAMB = 6'd15,
     S_DONE  = 6'd16, S_CLEAR = 6'd17, S_FINISH=6'd18,
     // palette emission, pipelined (request/consume like NT/OAM/CHR -- the pal
@@ -749,7 +822,15 @@ module nes_bridge(
     S_CWSP_OP  = 6'd40,  // emit opcode 0x15
     S_CWSP_HDR = 6'd41,  // emit hdr byte {ovf, cnt}
     S_CWSP_LD  = 6'd42,  // consume: cur_cw* <= l_cwsp_*[cwsp_i]
-    S_CWSP_E   = 6'd43;  // emit the 9 bytes of entry cwsp_i (scanline + vector)
+    S_CWSP_E   = 6'd43,  // emit the 9 bytes of entry cwsp_i (scanline + vector)
+    // Fase 3 CMD_PPU_SPLITS emission, chained right AFTER S_SPL_* (canonical
+    // position: immediately after the 0x11).  Copies the S_CSPL_* shape one for
+    // one -- S_PSP_LD moves the indexed array read off the mb_wdata/xor_acc
+    // cone (SERIALIZER TIMING), S_PSP_E emits from single registers.
+    S_PSP_OP   = 6'd49,  // emit opcode 0x16
+    S_PSP_HDR  = 6'd50,  // emit hdr byte {ovf, cnt}
+    S_PSP_LD   = 6'd51,  // consume: cur_p* <= l_psp_*[psp_i]
+    S_PSP_E    = 6'd52;  // emit the 2 bytes of entry psp_i (scanline, payload)
 
   reg [5:0]  st;
   reg [3:0]  sub;
@@ -781,6 +862,7 @@ module nes_bridge(
   reg [7:0]  cur_sl, cur_sx, cur_sy;   // consumed entry (loaded in S_SPL_LD)
   reg [1:0]  cur_nt;
   integer    si;
+  integer    pi;                  // Fase 3: the 0x16 arrays are 3 deep, not 4
 
   // v2.3 CMD_CHR_SPLITS: same latch-at-the-tick + request/consume discipline.
   // No derivation needed (the payload is already a raw scanline + bank byte).
@@ -788,16 +870,17 @@ module nes_bridge(
   reg [7:0]  l_cspl_hdr;          // {ovf, 4'd0, cnt[2:0]}
   reg        l_cspl_go;           // cnt>=2 && !poison -> emit this frame
   reg [7:0]  l_cspl_sl [0:3];
-  reg [7:0]  l_cspl_bk [0:3];
+  reg [15:0] l_cspl_bk [0:3];
   reg [2:0]  cspl_i;              // emission entry cursor
-  reg [7:0]  cur_csl, cur_cbk;    // consumed entry (loaded in S_CSPL_LD)
+  reg [7:0]  cur_csl;             // consumed entry (loaded in S_CSPL_LD)
+  reg [15:0] cur_cbk;             // {s1, s0} -- the 0x13 carries BOTH (v2.9)
 
   // v2.5 CMD_CHR_STATE8 / CMD_CHR_SPLITS8 (mapper 4): same latch-at-the-tick +
   // request/consume discipline, payload 8x wider.  l_cwsp_w is the frozen copy
   // the area budget calls out (4 x 64 b = 256 FF); it exists for the same reason
   // l_cspl_bk does -- the serializer must read a stable list while the capture
   // keeps accumulating the NEXT frame.
-  reg        l_cwin_en;           // mapper 4 this frame -> emit 0x14
+  reg        l_cwin_en;           // window-vector mapper (4/69/Namco 108) this frame -> emit 0x14
   reg [63:0] l_cwin;              // the frame-close window vector
   reg [7:0]  l_cwin_flags;        // 0x14 flags byte (bit0 = CHR-RAM)
   reg [2:0]  l_cwsp_cnt;          // 0..4
@@ -808,6 +891,65 @@ module nes_bridge(
   reg [2:0]  cwsp_i;              // emission entry cursor
   reg [7:0]  cur_cwsl;            // consumed entry scanline (S_CWSP_LD)
   reg [63:0] cur_cwin;            // consumed entry vector   (S_CWSP_LD)
+
+  // Fase 3 CMD_PPU_SPLITS 0x16: same latch-at-the-tick + request/consume
+  // discipline as the 0x13.  l_psp_pay[0] is NOT a plain copy of the capture's
+  // entry 0 -- see the tick.
+  reg [2:0]  l_psp_cnt;           // 1..3  (cnt==1 is LEGAL for this command)
+  reg [7:0]  l_psp_hdr;           // {ovf, 4'd0, cnt[2:0]}
+  reg        l_psp_go;            // cnt>=2 || entry0 code non-classic
+  reg [7:0]  l_psp_sl [0:2];
+  reg [4:0]  l_psp_py [0:2];      // 5 bits: 7:5 of the byte are padding
+  reg [2:0]  psp_i;               // emission entry cursor
+  reg [7:0]  cur_psl;             // consumed entry (loaded in S_PSP_LD)
+  reg [4:0]  cur_ppy;
+
+  // 4-bit nametable code -> the 2-bit FRAME_HDR.flags[5:4] enum (0=H, 1=V,
+  // 2=1A, 3=1B).  ONE HAND-WRITTEN TABLE, NOT derived at runtime, and mirrored
+  // in bridge_sim/mappers.py NTCODE_LEGACY, mmu.v and nes_render.a65.  The
+  // naive rule "the arrangement that gets the most quadrants right" sends the
+  // H-inverted code 0x3 to V, and swapping the AXIS is worse than swapping the
+  // PAGE -- hence 0x3 -> H and 0x5 -> V by hand.
+  function [1:0] psp_legacy_of;
+    input [3:0] c;
+    case (c)
+      4'h0: psp_legacy_of = 2'd2;   // 1A
+      4'h1: psp_legacy_of = 2'd2;
+      4'h2: psp_legacy_of = 2'd2;
+      4'h3: psp_legacy_of = 2'd0;   // H inverted -> H (own axis)
+      4'h4: psp_legacy_of = 2'd2;
+      4'h5: psp_legacy_of = 2'd1;   // V inverted -> V (own axis)
+      4'h6: psp_legacy_of = 2'd0;
+      4'h7: psp_legacy_of = 2'd3;
+      4'h8: psp_legacy_of = 2'd2;
+      4'h9: psp_legacy_of = 2'd0;
+      4'ha: psp_legacy_of = 2'd1;   // V
+      4'hb: psp_legacy_of = 2'd3;
+      4'hc: psp_legacy_of = 2'd0;   // H
+      4'hd: psp_legacy_of = 2'd3;
+      4'he: psp_legacy_of = 2'd3;
+      4'hf: psp_legacy_of = 2'd3;   // 1B
+    endcase
+  endfunction
+
+  // Entry 0 of the 0x16, AFTER the rendering-off fallback (spec SS2.2).  The
+  // capture reseeds its entry 0 at every frame_tick with the CLOSE-time
+  // payload, so when the display window never ran with rendering on
+  // (snap_psp_frozen == 0) the array still holds the value seeded at the
+  // PREVIOUS tick -- the previous frame's close, i.e. a ONE-FRAME LAG.  The
+  // simulator hits the same hole for a different reason (it ticks per EVENT,
+  // not per dot, so a rendering-ON frame with zero events in 0..239 also never
+  // seeds) and closes it in finalize_ppu(); measured on l3_finallap frame 5,
+  // whose only two writes in the window are both in vblank and whose published
+  // b4 came out 0 while the display ran with 1.  Substituting the LIVE payload
+  // here is the RTL half of that fix, and it is what makes the fallback and the
+  // command agree by construction.
+  wire [4:0] psp_pay0_live = {snap_ppuctrl[4], snap_ntcode};
+  wire [4:0] psp_pay0_eff  = snap_psp_frozen ? snap_psp_pay[4:0] : psp_pay0_live;
+  // "classic" = one of the four arrangements flags[5:4] can name.  Anything
+  // else has NO other channel, which is the whole reason cnt==1 can emit.
+  wire psp_classic0 = (psp_pay0_eff[3:0] == 4'h0) | (psp_pay0_eff[3:0] == 4'ha)
+                    | (psp_pay0_eff[3:0] == 4'hc) | (psp_pay0_eff[3:0] == 4'hf);
 
   // chr bank prev tracking
   reg        s0_valid, s1_valid;
@@ -824,174 +966,150 @@ module nes_bridge(
   // clear-pass cursor (NT dirty bitmap only since v2.4)
   reg [11:0] clr_nt;
 
-  // ---- v2.4 CHR ring pointers / run builder (see the CHR RING block) --------
+  // ---- CHR capture / emission state (see the CHR MIRROR + PENDING block) ----
   // TAP side (all updated in ONE cycle per chr_we, no sequencer):
-  reg [12:0] cb_wp;        // payload ring head
+  reg [12:0] cb_wp;        // free-running count of ACCEPTED tap bytes
   reg [7:0]  dsc_wp;       // descriptor ring head
   reg        cb_open;      // a run is open (cleared at every frame tick)
   reg [7:0]  cb_len;       // bytes in the open run (slice at 255)
   reg [12:0] cb_next_off;  // CHR offset a sequential write must carry
-  reg        cb_ovf;       // sticky: a byte was dropped (ring full)
+  reg        cb_ovf;       // sticky: a RUN was dropped (descriptor ring full)
   // FROZEN slice, latched at the tick:
   reg [7:0]  l_dsc_end;    // one past the last descriptor of the closing frame
-  reg [12:0] l_cb_end;     // one past the last payload byte of the closing frame
-  // SERIALIZER side:
-  reg [12:0] cb_rp;        // payload ring tail (drain cursor)
+  reg [12:0] l_cb_end;     // accepted-byte count at the close of the frame
+  // SERIALIZER side -- FRESH walk (write-order descriptors, byte-exact):
   reg [7:0]  dsc_i;        // descriptor cursor (== the ring tail between frames)
   reg [12:0] cur_coff;     // consumed descriptor: CHR offset
-  reg [12:0] cur_cptr;     // consumed descriptor: payload start
-  reg [12:0] cur_clen;     // derived length (next ptr - this ptr), <=255
+  reg [12:0] cur_ccnt;     // consumed descriptor: byte count at run OPEN
+  reg [12:0] cur_clen;     // derived length (next cnt - this cnt), <=255
   reg [7:0]  crun_k;       // payload byte cursor inside the current run
-  reg [12:0] chr_emit;     // CHR payload bytes shipped by THIS frame (observability)
-  // RETRANSMISSION FENCE.  On a rewind the drain is pulled back, so the frame's
-  // slice is [tail, fresh0) ++ [fresh0, l_cb_end): re-sent bytes first, then the
-  // ones that have never been emitted.  The fence records fresh0 so the walk can
-  // ABANDON the rest of the re-sent part once it has spent RETX_WINDOW bytes and
-  // JUMP straight to the fresh data.  Without it the cap has to be on the WHOLE
-  // frame, and that is the bug that cost the field deploy twice over: a whole-
-  // frame cap starves fresh bytes (v2.6a) or, if you remove it, a rewind plus a
-  // CHR_WSTOP cut leaves an un-emitted remainder that makes the NEXT frame
-  // bigger, which cuts again -- measured 7445 CHR bytes in one frame and 3996
-  // dropped bytes at Mega-Man rate.  Capping only the RE-SENT part breaks that
-  // loop while leaving fresh delivery exactly as unlimited as v2.5.
-  reg        in_retx;      // the walk is still inside the re-sent region
-  reg [12:0] l_fresh0;     // payload boundary: first byte never emitted
-  reg [7:0]  l_dsc_fresh0; // descriptor boundary of the same point
-  // ==================== v2.6 ACK-GATED DRAIN (at-least-once for 0x41) =======
+  reg [12:0] chr_emit;     // CHR payload bytes shipped by THIS frame (breadcrumb)
+  // The mirror is read at a REGISTERED address, shared by both walks.  Nothing
+  // combinational reaches chrmem's address port (SERIALIZER TIMING) and the two
+  // walks can never be active at once, so one cursor is enough.
+  reg [12:0] chr_ra_r;
+  // SERIALIZER side -- PENDING re-send scan (tile-granular, from the mirror):
+  reg [9:0]  cp_i;         // tile cursor, 0..CHR_TILES
+  reg        cp_inrun;     // a re-send run is open
+  reg [8:0]  cp_start;     // first tile of the open run
+  reg [4:0]  cp_len;       // open run length in TILES (1..CHR_PEND_MAXT)
+  reg [7:0]  cp_bk;        // payload byte cursor inside the re-send run
+  // CIRCULAR START.  The scan walks tiles in ADDRESS order, and a budget that
+  // stops at 48 tiles would re-send THE SAME LOWEST 48 on every recovery: while
+  // the consumer is parked the ACK never confirms, generation A never dies, and
+  // the tiles above them are never reached.  That is head-of-line starvation --
+  // the exact failure mode that blacked out the device with the ring (the
+  // "re-ships the same oldest bytes for ever" note).  So the pass STARTS at
+  // cp_base -- where the previous one ran out of budget -- and WRAPS, visiting
+  // all CHR_TILES cells exactly once.  Two properties, and the gate needs both:
+  //   * fairness: successive recoveries cover DIFFERENT tiles, so a whole-bitmap
+  //     debt drains in ceil(512/48) = 11 recovery frames instead of never;
+  //   * COMPLETENESS: a debt that FITS in one budget is delivered by ONE pass,
+  //     wherever it sits.  An earlier cut gated delivery on `tile >= cp_base`
+  //     instead of wrapping, and that lost 27 contiguous tiles on the real trace
+  //     (Fantasy Zone, no stall): the debt was below the cursor, the pass
+  //     refused it, and no further recovery ever came to pick it up.
+  reg [8:0]  cp_base;      // first tile of THIS pass (wraps)
+  reg [8:0]  cp_nresume;   // ... where the next pass will pick up
+  reg [12:0] chr_pend_emit;// bytes CHARGED to this frame's re-send budget
+  reg [12:0] chr_pend_allow;// ... and the allowance, latched at the tick
+  // ⚠️ REDUNDANT WITH pend_owed since v2.8, and kept on purpose as defence in
+  // depth -- NOT because it is still load-bearing.  pend_owed (resync_en &
+  // saw_ack & chr_debt) already covers every frame this term fires on; the two
+  // are ORed into cp_deliver, so the older term can only ever agree.  If one of
+  // them is ever removed, remove THIS one, and do not read its survival as
+  // evidence that the debt logic needs two triggers.
+  reg        pend_drain;   // deliver on a NON-recovery frame (debt unconfirmed)
+  // v2.8 DEBT.  chr_debt is "some tile still has D set", maintained EXACTLY (the
+  // scan visits every cell, so the pass recomputes it from cp_dany).  It is what
+  // ends the drain: the window used to be the ACK's (recov_active, killed by
+  // caught_w/confirm_a_w), and with an ACK one frame behind -- the NORMAL regime
+  // -- that window closed after one recovery plus one drain with 128 tiles still
+  // marked and never sent.  Now the drain ends when the DEBT is paid, not when
+  // the ACK bookkeeping says so.
+  reg        chr_debt;     // some tile is owed-but-unsent (D set somewhere)
+  reg        cp_dany;      // this pass left a D set (recomputes chr_debt)
+  // v2.8 DEFERRED-FRESH backlog.  CHR_WSTOP can cut the FRESH walk short; the
+  // bytes keep their place in the descriptor ring and go out next frame, but
+  // l_cb_end has already moved, so the next frame's allowance only discounts the
+  // NEW capture and the frame then ships deferred + new + resend against a
+  // budget sized for one of the three.  Sticky flag -> the next frame's
+  // allowance is ZERO, which is the honest answer (that frame owes the renderer
+  // a whole backlog already).
+  reg        chr_defer_r;
+  // TILE accounting for the allowance (see CHR_TILE_CAP).  Counting at the tap
+  // is what makes a partial-tile write cost a whole descriptor, exactly as it
+  // does at the renderer.  A tile touched by two separate runs counts twice --
+  // over-counting shrinks the allowance, which is the safe direction.
+  reg [8:0]  cb_tiles;     // tiles touched since the last tick (saturates)
+  reg [8:0]  cb_last_tile; // ... last tile seen, to detect the transition
+  reg        cb_tile_vld;
+  reg        cp_any;       // some pend bit survived this pass (drives chr_pend_nz)
+  reg        chr_pend_nz;  // chrpend may hold a set bit -- when 0 the scan is skipped
+  reg        chr_scrub_r;  // a generation was invalidated -> materialise it
+  reg        chr_forceall; // descriptor overflow -> mark EVERY tile pending
+  reg        l_forceall;   // ... latched for the frame the scan runs in
+  reg        chr_scan_go;  // run the pend scan in THIS frame (latched at the tick)
+  // ================== v2.7 CHR RE-SEND FROM THE MIRROR ======================
   // WHY.  Until v2.5 the drain cursor advanced as the serializer emitted, so a
   // frame the renderer never applied took its CHR bytes with it: NT and palette
-  // have pend/recovery, CHR had NOTHING.  Gate 2.4 hardware: Mega Man (mapper
-  // 2, pure CHR-RAM) drew a permanently corrupt background with 79 overruns in
-  // ~33 s -- every skipped frame silently deleted tiles, and the ONE-SHOT boot
-  // dump never comes back.  The offline gate could not see it: bridge_sim is a
-  // LOCKSTEP consumer that never loses a frame.
+  // had pend/recovery, CHR had NOTHING.  Gate 2.4 hardware: Mega Man (mapper 2,
+  // pure CHR-RAM) drew a permanently corrupt background with 79 overruns in
+  // ~33 s -- every skipped frame silently deleted tiles, and a ONE-SHOT boot
+  // dump never comes back.  v2.6 answered with an ACK-GATED RING: hold the
+  // payload until an ACK proves delivery, rewind on a recovery.  That worked
+  // for ordinary skips and FAILED for the case it was written for -- a consumer
+  // parked INSIDE a dump -- because holding costs CAPACITY, and the valve that
+  // protects capacity (the window TRIM) gives up by DISCARDING.  Loss was
+  // therefore still permanent, just rarer: run_chrburst reports 32-460 B gone
+  // in four cells of the 820-900 x 6/30/60 matrix.
   //
-  // MECHANISM (deliberately NOT the NT two-generation union -- the ring already
-  // stores content in arrival order, which is all a retransmission needs):
-  //   cb_cp/dsc_cp = COMMITTED TAIL, the oldest byte/descriptor not yet proven
-  //     applied.  Ring occupancy is measured from IT, so the tap can never
-  //     overwrite a byte that may still have to be re-sent.
-  //   commit  = at the tick, when the ACK names a frame we still have in the
-  //     8-deep publish history (lag <= 7 -- the commit window must reach PAST
-  //     the recovery trigger at lag >= 3, or a renderer parked at lag 4 can
-  //     never confirm anything) AND the applied chain from cb_cp is unbroken:
-  //     cb_cp jumps to where that frame's drain STOPPED (which may be short of
-  //     the frame's whole slice if a valve cut the walk -- retiring exactly what
-  //     was shipped is what makes that safe).
-  //   rewind  = at the tick of a RECOVERY frame (the very same
-  //     recovery_now_w = lost_r | ack_skip that arms the NT pending union), the
-  //     drain cursor is pulled BACK to the committed tail, so the frame
-  //     re-emits every unconfirmed run.  Runs are re-emitted in ARRIVAL ORDER
-  //     and the renderer's 0x41 handler is last-wins over an 8 KB shadow
-  //     (nes_render.a65 nes_chr_handle_run: MVN into nes_chr_shadow, then
-  //     reconvert the touched tiles), so a redundant re-emission is a no-op.
-  //   chain_broken = the ONE correctness guard.  Committing to frame S is only
-  //     safe if everything before S's slice was applied too.  A skip breaks
-  //     that chain, and a frame published BEFORE the skip is not evidence any
-  //     more (the classic bug shape: ack still names a pre-skip frame at the
-  //     next tick and would retire bytes the renderer never saw).  So a skip
-  //     sets chain_broken and only a frame flagged hist_cov can clear it when
-  //     its own ACK arrives.
-  //     hist_cov is the WEAK condition on purpose: "this frame's drain STARTED
-  //     at the committed tail", NOT "this frame carried everything unconfirmed".
-  //     A valve (CHR_WSTOP, or the RETX_CHUNK quota) can stop such a frame half
-  //     way, and
-  //     that is still sound, because the commit target is where its drain
-  //     STOPPED (hist_cb), not the end of its slice: everything retired was in
-  //     THAT frame, and the frame was applied.  Requiring the strong condition
-  //     would deadlock the chain repair exactly when the valves are active.
-  //   RETX CAP + ABANDON = the anti-starvation valve (field failure).  A rewind
-  //     re-ships the OLDEST bytes first, so rewinding forever means the NEWEST
-  //     writes never leave the ring -- the renderer keeps applying stale tiles
-  //     and the screen never converges (black screen, +63 overruns/s).  Two
-  //     things stop that: only RETX_CHUNK bytes of re-send fit in a frame (the
-  //     quota fence jumps the drain to the fresh data when it runs out), and the
-  //     window itself is TRIMMED once it grows past RETX_WINDOW -- so NEW data
-  //     always gets the rest of the frame and the ring always gets its room
-  //     back.
-  //   INVARIANT: this module never drops a CHR byte that v2.5 would have
-  //     accepted.  The tap accepts whenever EITHER view has room, and room_d IS
-  //     the v2.5 test, so at-least-once is a layer on top of the old behaviour
-  //     and never a regression of it.  (An earlier cut tried to express this as
-  //     a "reclaim" that fired only when room_h failed while room_d held -- dead
-  //     code by construction, because a rewind makes the two views identical.
-  //     What actually keeps the ring roomy is the window TRIM at the tick.)
+  // MECHANISM.  The payload is no longer queued, it is MIRRORED (chrmem), and
+  // what is owed is a BITMAP, not bytes:
+  //   * the FRESH walk is unchanged in shape and in output -- it follows the
+  //     write-order descriptors of the closing frame and emits their bytes,
+  //     which is what keeps every golden byte-identical.  As it ships a byte it
+  //     marks that byte's TILE in chrpend generation B: "the renderer owes me
+  //     an ACK for this tile".
+  //   * the PEND SCAN (S_CP*) walks the 512 tiles in address order.  On a
+  //     RECOVERY frame (the same recovery_now_w = lost_r | ack_skip that arms
+  //     the NT union) it emits every pending tile straight from the mirror, up
+  //     to the frame's remaining allowance, and DEFERS the rest by leaving bits
+  //     set.  On any other frame it only MATERIALISES an invalidation.
+  //   * confirmation is the ntpend algebra, shared registers and all: a tick
+  //     that catches up (ack==seq, no skip) kills B, an ack at/after the
+  //     sealing recovery kills A.
+  // Runs are idempotent at the renderer (nes_render.a65 nes_chr_handle_run:
+  // MVN into nes_chr_shadow, then reconvert the touched tiles), so a redundant
+  // re-emission is a no-op and the re-send needs no ordering guarantee at all.
   //
-  // BYTE IDENTITY.  chr_hold is `resync_en`: the byte-exact gate tb
-  // ties resync_en=0 and never ACKs, so the tail follows the drain exactly as
-  // before and every golden stays byte-identical.  On hardware, without a skip
-  // the emission is also unchanged -- the rewind is the ONLY new emission path
-  // and it needs recovery_now_w, which no golden and no lockstep sim produces.
+  // WHY THIS CANNOT LOSE WHAT THE RING LOST.  The ring lost bytes because it
+  // had to choose between keeping them and having room for new ones.  The
+  // mirror has no such choice: a tile's bit stays set until an ACK proves
+  // delivery, and the DATA is in an absolute store that the tap keeps current.
+  // Deferring costs latency (48 tiles per recovery frame), never content.
   //
-  // ACK TEAR (this fix is the FIRST consumer that INDEXES frame_ack_i, so the
-  // property has to be written down): the renderer writes NES_FRAME_ACK as TWO
-  // byte stores ($2BD4 lo, $2BD5 hi -> main.v nes_frame_ack[7:0]/[15:8]), so a
-  // tick landing between them samples {old_hi, new_lo}.  That is safe here, and
-  // not by luck of the index: the low byte is the NEW one, so the history index
-  // (= ack[2:0]) is always the correct slot; a torn high byte only
-  // displaces the value by a multiple of 256, which drives the lag far past the
-  // depth-8 window (ack_win_q) and SUPPRESSES the commit for that tick.  Suppression is
-  // the safe direction, and the hi byte only ever changes once every 256 frames.
+  // BYTE IDENTITY.  Delivery is gated on lost_hold, which needs
+  // recovery_now_w = resync_en & saw_ack & (lost_r | ack_skip); the byte-exact
+  // gate ties resync_en=0 and never ACKs, so no tile is ever delivered and the
+  // scan itself is skipped (chr_scan_go stays 0 -- nothing invalidates while
+  // ack is frozen at 0), which means the goldens do not even pay its cycles.
+  // The fresh walk emits exactly what v2.5/v2.6 emitted with the tail following
+  // the drain, which is what resync_en=0 already did.
   //
-  // DEGRADATION, measured with a PERFECT lockstep consumer (tb_budget, the
-  // review probe: ack = newest published seq, zero skips) at a sweep of
-  // write rates, fix vs pre-fix drops:
-  //   2120 (corpus plateau) 0/0 | 2500  0/0 | 3000  0/0 | 3700  0/0
-  //   5000  19866/31938 | 6000  38916/71898 | 7000  41216/111820
-  // i.e. nothing is dropped anywhere near a rate an NES can produce, and past
-  // that cliff -- which is a property of the 8 KiB ring, at 2.4x the measured
-  // per-frame maximum -- the fix still drops LESS than the design it replaces.
-  // Never a corrupt run, never worse than before the fix.
-  reg [12:0] cb_cp;        // committed payload tail
-  reg [7:0]  dsc_cp;       // committed descriptor tail
-  reg        chain_broken; // a skip invalidated the "everything before was applied" chain
-  reg        big_skip;     // the last skip was bigger than a window can repair
-  reg        l_chr_cov;    // frame being serialized starts AT the committed tail
-  // Occupancy from the pointers themselves (exact under the modular wrap; no
-  // counter to keep in sync with cb_rp's per-run JUMP in S_CR3).  The room
-  // margin covers the 1-descriptor look-ahead dsc_i takes while emitting.
-  // TWO occupancies: from the COMMITTED tail (what at-least-once needs) and from
-  // the DRAIN cursor (what v2.5 needed).  Room from either one is enough to
-  // accept a byte, and the tap ALSO bounds the window per cycle (the reclaim in
-  // the CHR tap) -- the tick-rate trim alone lets cb_used_h alias between ticks.
-  // HOLD FROM RESET, not from the first ACK.  Gating this on saw_ack left the
-  // whole boot window running as plain v2.5 -- and the boot window is where the
-  // ONE-SHOT screen-off dump lives, i.e. the exact loss this fix exists to stop
-  // (measured: a frame skipped at seq 2 dropped its 64 B with saw_ack still 0).
-  // Nothing can wedge in that window: before the first ACK nothing commits, so
-  // the window only grows -- and growth is exactly what trim_n_q watches (the
-  // no-commit branch of the trim), backed per cycle by the reclaim in the tap.
-  // Both fire without needing an ACK, so the worst case in the boot window
-  // degenerates to v2.5 instead of stalling.  The byte-exact gate is unaffected
-  // (it ties resync_en=0).
-  wire        chr_hold  = resync_en;
-  // EVERY ring distance goes through an explicitly SIZED wire.  This is not
-  // style: a modular difference inlined into a comparison against a localparam
-  // is evaluated at the INTEGER width of that localparam, so the 13-bit wrap
-  // never happens and a just-wrapped head reads as ~4.29e9.  Cost: three
-  // CHR-RAM goldens started dropping bytes the moment these were folded into
-  // the comparisons (battletoads/megaman1/ducktales2, caught by run_bridge).
-  wire [12:0] cb_used_h  = cb_wp  - cb_cp;
-  wire [7:0]  dsc_used_h = dsc_wp - dsc_cp;
-  wire [12:0] cb_used_d  = cb_wp  - cb_rp;
-  wire [7:0]  dsc_used_d = dsc_wp - dsc_i;
-  // Room flags stay COMBINATIONAL, as they were before v2.6.  Registering them
-  // (v2.6b) let the tap drop a byte on the exact boundary that the previous
-  // cycle's view still called full -- one byte the v2.5 design accepted, and
-  // worse, it dirtied the sticky cb_ovf, which is the ONLY field breadcrumb
-  // this subsystem has.  The timing problem was never here: the critical path
-  // was ack -> cb_rp (the history mux chain), which is registered below.
-  wire        cb_room_h = (cb_used_h < (CB_SZ - 8)) && (dsc_used_h < (DSC_N - 4));
-  wire        cb_room_d = (cb_used_d < (CB_SZ - 8)) && (dsc_used_d < (DSC_N - 4));
-  // ACCEPT IF EITHER VIEW HAS ROOM.  room_d is what v2.5 used, so this can never
-  // drop a byte v2.5 would have taken.  The reclaim that used to ride along here
-  // is GONE: after a rewind cb_rp==cb_cp makes the two views identical, so it
-  // was dead code exactly in the regime it was written for (proved by the
-  // scatter gate: 2335 drops with reclaim "firing" 8 times).  The window trim at
-  // the tick is what actually keeps the ring from filling now.
-  wire        cb_room   = chr_hold ? (cb_room_h | cb_room_d) : cb_room_d;
+  // ACK TEAR: the renderer writes NES_FRAME_ACK as TWO byte stores ($2BD4 lo,
+  // $2BD5 hi -> main.v nes_frame_ack[7:0]/[15:8]), so a read landing between
+  // them samples {old_hi, new_lo}.  Nothing here indexes the ack any more (the
+  // publish history is gone), so the only consumer is the plausibility filter
+  // below, which rejects the tear as an out-of-range jump.
+  //
+  // ROOM.  The mirror cannot run out -- it is indexed by offset -- so the only
+  // capacity left is the DESCRIPTOR ring, and it only has to hold ONE frame.
+  // The margin covers the 1-descriptor look-ahead dsc_i takes while emitting.
+  wire [7:0]  dsc_used  = dsc_wp - dsc_i;
+  wire        cb_room   = (dsc_used < (DSC_N - 4));
   // reported occupancy (breadcrumb/tb only; nothing in the logic reads it)
-  wire [12:0] cb_used   = chr_hold ? cb_used_h : cb_used_d;
+  wire [12:0] cb_used   = {5'd0, dsc_used};
   // A write opens a NEW run when there is none, when it is not the sequential
   // successor of the last one, when the open run already hit the 255-byte
   // ceiling of the len field, or when the offset WRAPPED to 0.
@@ -1023,7 +1141,14 @@ module nes_bridge(
   reg [7:0]  ciram_q, oam_q, oam_frz_q;
   reg [5:0]  pal_q;        // registered read of pal[pal_i] (S_PAL*_RD/_WR pair)
   reg [25:0] chrdsc_q;     // registered read of chrdsc[dsc_i]  (S_CR0/1, S_CR2/3)
-  reg [7:0]  chrbuf_q;     // registered read of chrbuf[cb_rp]  (S_CRA/S_CRB)
+  reg [7:0]  chrmem_q;     // registered read of chrmem[chr_ra_r] (S_CR*/S_CP*)
+  // NOTE (fragile property, written down on purpose): chrpend_q is consumed
+  // ONLY in S_CP1, one cycle after S_CP0 issued the address, and S_CP0 itself
+  // never looks at it -- so the read has exactly one consumer and no bypass is
+  // needed.  If a future state ever reads chrpend_q in the same cycle a scan
+  // write lands on the same cell, add the read-during-write bypass that chrmem
+  // uses below.
+  reg [2:0]  chrpend_q;    // registered read of chrpend[cp_a]  (S_CP0/S_CP1)
 
   // nametable RMW tap phase
   reg        nt_rmw;
@@ -1053,20 +1178,12 @@ module nes_bridge(
   wire        bvf_next_w   = pend_valid   & ~caught_w;
   wire        recovery_now_w = resync_en & saw_ack & (lost_r | ack_skip);
   wire        seal_now_w   = recovery_now_w & ~avf_next_w;
-  // ---- v2.6 CHR commit / rewind decisions (all consumed at the tick) --------
-  // The ACK may only retire CHR payload when (a) we still hold the named
-  // frame's endpoint (lag<=7 = the 8-deep history; the window must reach PAST
-  // the lag>=3 recovery trigger or a renderer parked at lag 4 never commits),
-  // (b) no unprocessed skip is
-  // sitting on this very tick, and (c) the applied chain from the committed
-  // tail is intact -- or the named frame carried EVERYTHING unconfirmed by
-  // itself (hist_cov), which repairs the chain.
-  // ack_skip/chain_broken are REGISTERED one cycle after the jump they detect.
-  // A tick landing in that very cycle would still read them clear and could
-  // retire payload the skip just invalidated (a 1-in-280k-cycle race, but a
-  // silent-data-loss one), so the CHR decision uses the COMBINATIONAL jump too.
-  // Deliberately not retrofitted onto caught_w/confirm_a_w: the NT generation
-  // algebra is hardware-validated as it stands and is not this fix's business.
+  // v2.7: CHR now shares these three terms verbatim -- recovery_now_w arms the
+  // pend delivery, seal_now_w decides whether it seals generation A, and the
+  // avf/bvf pair is latched at the tick for BOTH scans.  The v2.6 commit /
+  // rewind / trim decisions that used to be derived here are gone with the
+  // ring: there is no payload to retire, so an ACK has nothing to authorise
+  // beyond killing a generation.
   wire [15:0] ack_fwd_w    = frame_ack_i - ack_prev;   // sized: modular
   // PLAUSIBILITY IS A WINDOW, NOT A CONSTANT.  The first cut tested "moved
   // forward by <= 64 and sits within 64 of the published seq", and that constant
@@ -1084,122 +1201,89 @@ module nes_bridge(
   // high-byte rollover reads as ~255 BACKWARDS and stays outside.
   wire [15:0] ack_span_w   = frame_seq_o - ack_prev;
   wire        ack_plaus_w  = (ack_fwd_w != 16'd0) & (ack_fwd_w <= ack_span_w);
-  wire        ack_jump_w   = saw_ack & (frame_ack_i != ack_prev)
-                           & ack_plaus_w & (ack_fwd_w >= 16'd2);
-  // TICK INPUTS ARE PRE-REGISTERED (cost an STA run: -3.383 ns, TNS -132, path
-  // nes_frame_ack[*] -> cb_rp[*]).  Done inline, the tick decision was an 8:1
-  // history mux feeding a 13-bit subtract feeding a compare feeding the commit
-  // AND-tree feeding a mux feeding ANOTHER subtract and compare -- and its
-  // result had to reach cb_rp's D input in one CLK2 period.  All of it derives
-  // from values that are STATIC between ticks, and ticks are ~280k cycles
-  // apart, so a few cycles of pipelining costs nothing.  DO NOT INLINE AGAIN.
-  //
-  // ONE SAMPLE, ONE PIPELINE.  Every derived term must describe the SAME ack
-  // value.  In the first cut hist_*_q was one register deep and commit_fwd_q /
-  // the backlog tests were two, so an ack that moved at T-1 with a tick at T had
-  // the forward guard validating the PREVIOUS history entry.  That is not
-  // theoretical: hist_cb is NOT monotonic (a truncated recovery frame records a
-  // stop behind its predecessor), so hist_cb[ack+1] < cb_cp <= hist_cb[ack] is
-  // reachable, cb_cp would step BACKWARDS and the same tick's rewind would walk
-  // descriptors the tap has already overwritten -- garbage off/len in an emitted
-  // 0x41, i.e. silent CHR corruption.  So: the ack is sampled into a pipeline,
-  // every consumer reads the stage that matches its own depth, and the tick only
-  // commits while the whole pipeline agrees (ack_stable_w).
+  // ONE SAMPLE, ONE PIPELINE.  NES_FRAME_ACK is written by the renderer as TWO
+  // byte stores, so a value read between them is a TEAR.  The ack is sampled
+  // into a 3-deep pipeline and only acted on while every stage agrees
+  // (ack_stable_w); together with the plausibility window below that is what
+  // makes a tear be DISCARDED instead of scored as a skip.  v2.6 also fed an
+  // 8-deep publish history and a commit/trim decision off this pipeline; that
+  // whole cone is gone with the ring, and with it the -3.383 ns path
+  // nes_frame_ack[*] -> cb_rp[*] the pipeline was introduced to break.
   reg [15:0] ack_s0, ack_s1, ack_s2;
-  reg [12:0] hist_cb_q;
-  reg [7:0]  hist_dsc_q;
-  reg        hist_cov_q;
-  reg        ack_win_q;      // (seq - ack) <= 7, i.e. inside the history depth
-  reg        commit_fwd_q;   // the commit target lies inside [cb_cp, cb_wp]
-  reg        trim_c_q;       // backlog > WINDOW, ASSUMING a commit
-  reg        trim_n_q;       // ... assuming no commit
-  reg        room_lo_q;      // occupancy already past half the ring
-  // sized distances (see the note on the room flags -- never inline these into a
-  // comparison against a localparam: the integer width kills the modular wrap)
-  wire [12:0] cb_adv_w  = hist_cb_q - cb_cp;   // commit target, from the tail
-  wire [12:0] bk_c_w    = cb_rp - hist_cb_q;   // backlog if we commit
-  wire [12:0] bk_n_w    = cb_rp - cb_cp;       // backlog if we do not
-  wire [7:0]  dk_c_w    = dsc_i - hist_dsc_q;  // ... in DESCRIPTORS
-  wire [7:0]  dk_n_w    = dsc_i - dsc_cp;
-  // NB: this block owns ack_s*/hist_*_q/… COMPLETELY, reset included.  Splitting
-  // a reg's reset into the main FSM block and its updates into this one is two
-  // always blocks driving one reg: iverilog simulates it happily and
-  // quartus_map refuses it outright ("Can't resolve multiple constant drivers"),
-  // which is the house gotcha this file already documents for debug taps.
+  // NB: this block owns ack_s* COMPLETELY, reset included.  Splitting a reg's
+  // reset into the main FSM block and its updates into this one is two always
+  // blocks driving one reg: iverilog simulates it happily and quartus_map
+  // refuses it outright ("Can't resolve multiple constant drivers"), which is
+  // the house gotcha this file already documents for debug taps.
   always @(posedge clk) if (rst) begin
     ack_s0<=16'd0; ack_s1<=16'd0; ack_s2<=16'd0;
-    hist_cb_q<=13'd0; hist_dsc_q<=8'd0; hist_cov_q<=1'b0;
-    ack_win_q<=1'b0; commit_fwd_q<=1'b0;
-    trim_c_q<=1'b0; trim_n_q<=1'b0; room_lo_q<=1'b0;
   end else begin
-    ack_s0       <= frame_ack_i;
-    ack_s1       <= ack_s0;
-    ack_s2       <= ack_s1;
-    hist_cb_q    <= hist_cb [ack_s0[2:0]];     // aligned with ack_s1
-    hist_dsc_q   <= hist_dsc[ack_s0[2:0]];
-    hist_cov_q   <= hist_cov[ack_s0[2:0]];
-    ack_win_q    <= ((frame_seq_o - ack_s1) <= 16'd7);   // aligned with ack_s2
-    // FORWARD-ONLY guard: the tail can be forced ahead of a stored checkpoint
-    // (window trim), so a stale entry could otherwise pull cb_cp BACKWARDS --
-    // which reads as a nearly full ring and strangles the tap.
-    commit_fwd_q <= (cb_adv_w <= cb_used_h);            // aligned with ack_s2
-    // WINDOW TRIM tests, both branches precomputed.  The <= window test rejects
-    // a WRAPPED distance: a rewind pulls cb_rp back and a commit aimed at a
-    // frame published before it targets a point AHEAD of the cursor.
-    trim_c_q     <= ((bk_c_w <= cb_used_h)  & (bk_c_w > RETX_WINDOW))
-                  | ((dk_c_w <= dsc_used_h) & (dk_c_w > RETX_DSC));
-    trim_n_q     <= ((bk_n_w <= cb_used_h)  & (bk_n_w > RETX_WINDOW))
-                  | ((dk_n_w <= dsc_used_h) & (dk_n_w > RETX_DSC));
-    // high-water on EITHER ring: past this the retransmission window is a
-    // luxury the tap cannot afford, and giving it up is what keeps "never drops
-    // a byte v2.5 would have taken" true by construction.
-    room_lo_q    <= (cb_used_h > RING_HIWATER) | (dsc_used_h > DSC_HIWATER);
+    ack_s0 <= frame_ack_i;
+    ack_s1 <= ack_s0;
+    ack_s2 <= ack_s1;
   end
   // the whole pipeline must describe one settled ack value
   wire        ack_stable_w = (frame_ack_i == ack_s0) & (ack_s0 == ack_s1)
                            & (ack_s1 == ack_s2);
-  // ack_jump_w stays COMBINATIONAL: it is the one term that must see the ack
-  // write in the very cycle a tick could land on it (the silent-data-loss race),
-  // and it is only a subtract + compare.
-  wire        chr_commit_w = chr_hold & saw_ack & ~ack_skip & ~ack_jump_w
-                           & ack_stable_w & ack_win_q & commit_fwd_q
-                           & (~chain_broken | hist_cov_q);
-  wire [12:0] cb_cp_next   = chr_commit_w ? hist_cb_q  : cb_cp;
-  wire [7:0]  dsc_cp_next  = chr_commit_w ? hist_dsc_q : dsc_cp;
-  // TRIM: ALL-OR-NOTHING.  When the already-emitted unconfirmed span passes
-  // RETX_WINDOW (in bytes OR in descriptors), or either ring is past its
-  // high-water, the WHOLE window is given up -- the tail jumps to the drain
-  // cursor.  It does not shave the span back to the limit; there is no cheap way
-  // to land on a descriptor boundary mid-window, and abandoning the lot is the
-  // safe direction (it degenerates to v2.5 for those bytes).  This is what keeps
-  // the ring roomy at the tick; the per-cycle bound lives in the tap.
-  wire        chr_trim_w   = chr_hold & ((chr_commit_w ? trim_c_q : trim_n_q)
-                                         | room_lo_q);
-  // A rewind is also pointless -- and actively harmful -- once the renderer is
-  // further behind than the history is deep: past lag 7 we cannot even say which
-  // frames it applied, the gap is far larger than one window, and re-sending
-  // sinks a consumer that is already drowning (measured on a 100-frame pause:
-  // 3938 bytes lost with the rewind versus 3792 without, i.e. WORSE than doing
-  // nothing).  ack_win_q is exactly that horizon, and it is already registered.
-  // NB this does NOT disarm the skip detection itself: ack_skip / chain_broken
-  // still fire, so the NT recovery algebra keeps working on its own terms.
-  // TODO (follow-up, AFTER hardware validation -- deliberately NOT in this
-  // build): gate the rewind on a pure CAPACITY signal instead of inferring
-  // capacity from the lag.  `ack_moved` = 1 FF + 1 AND: SET whenever ack_prev
-  // updates (the renderer acknowledged something since the last frame), CLEARED
-  // at every accepted tick, and folded in as `chr_rewind_w &= ack_moved`.  It
-  // says exactly what the lag-based terms only approximate -- "the consumer made
-  // progress during the last frame, so spending part of this one on a re-send is
-  // affordable" -- and it is the term that would separate the two regimes the
-  // current gate cannot: retransmission pays off at low CHR rates (lag scenario,
-  // 100% recovered) and costs at saturating ones.  Bundle it with the mid-run
-  // clamp fix documented above.
-  wire        chr_rewind_w = recovery_now_w & ~chr_trim_w & ack_win_q & ~big_skip;
-  // "this frame will start at the committed tail": either the drain is pulled
-  // back to it (rewind) or it already sits there (nothing unconfirmed).  After a
-  // give-up the tail IS the drain cursor, so that also counts.
-  wire        chr_cov_w    = chr_rewind_w | chr_trim_w
-                           | ((cb_rp == cb_cp_next) & (dsc_i == dsc_cp_next));
+  // ---- pending-scan cell algebra (registers only -- SERIALIZER TIMING) ------
+  // A_eff/B_eff materialise the tick-latched generation validity into the two
+  // stored bits; l_forceall is the descriptor-overflow escape, which marks
+  // every tile as young.  cp_send is the DELIVERY decision and it is what the
+  // seal is qualified on: a tile the budget did not carry must not be sealed.
+  // The tile this step of the scan is on: the pass starts at cp_base and wraps
+  // (cp_i is a COUNT, not an index), which is what makes one pass visit every
+  // cell exactly once while still starting where the last budget ran out.
+  wire [8:0]  cp_a      = cp_base + cp_i[8:0];
+  // D is deliberately NOT gated by pend_avf/pend_bvf: it is not an ACK state.
+  wire        cp_d_eff  = chrpend_q[2];
+  wire        cp_a_eff  = pend_avf & chrpend_q[1];
+  wire        cp_b_eff  = (pend_bvf & chrpend_q[0]) | l_forceall;
+  wire        cp_eff    = cp_d_eff | cp_a_eff | cp_b_eff;
+  // ROOM.  Two v2.8 corrections, both measured:
+  //  * `emit < allow` OVERSHOOTS by one tile -- it lets emit reach allow+15, and
+  //    that is how a 2120 B fresh frame plus a 960 B resend made 3080 > the
+  //    ceiling.  The test has to be "does the NEXT tile still fit".
+  //  * the mailbox floor is a RESERVE, not the raw CHR_WSTOP: a recovery with a
+  //    large NT union (<=4448 B) plus a full 3072 B resend plus headers reaches
+  //    ~7728 > 7600, so the resend would push the whole FRESH slice past the
+  //    valve -- and the fresh slice is what fills the descriptor ring.  1 KiB is
+  //    above the worst fresh frame the corpus produces after the NT union.
+  wire        cp_room   = ((chr_pend_emit + 13'd16) <= chr_pend_allow)
+                        & (wptr < (CHR_WSTOP - 13'd1024));
+  // DELIVERY IS NOT LIMITED TO RECOVERY FRAMES.  A recovery arms on an edge
+  // (lost_r / ack_skip) and a big loss outlives it: the sealed debt would sit in
+  // generation A with nothing left to ship it.  So delivery also runs while that
+  // seal is UNCONFIRMED (recov_active), which is a self-terminating window --
+  // the confirmation that kills A is exactly what ends it.
+  // A FRAME DELIVERS while a recovery is armed, while a sealed recovery is
+  // unconfirmed, OR while there is DEBT.  The third term is the v2.8 fix: the
+  // first two are ACK windows and they close long before a multi-budget debt is
+  // paid.  All three are resync_en-gated (lost_hold/pend_drain through
+  // recovery_now_w, pend_owed explicitly), so the byte-exact gate never
+  // delivers and never even sets D.
+  wire        pend_owed  = resync_en & saw_ack & chr_debt;
+  wire        cp_deliver = lost_hold | pend_drain | pend_owed;
+  wire        cp_send    = cp_deliver & cp_eff & cp_room;
+  // The cell rewrite, as three wires so the two S_CP1 branches cannot drift.
+  // D: cleared by delivery, otherwise kept -- and SET when this frame could
+  //    deliver, the tile was owed, and the budget said no.  l_forceall enters
+  //    here too, which is what makes the descriptor-overflow escape actually
+  //    ship (in v2.7 it marked 512 tiles that nothing was left to deliver).
+  wire        cp_dnext   = cp_send ? 1'b0
+                         : (cp_d_eff | l_forceall | (cp_deliver & cp_eff));
+  wire        cp_anext   = seal_hold ? cp_send : cp_a_eff;
+  wire        cp_bnext   = seal_hold ? 1'b0    : cp_b_eff;
+  // ---- pending-scan SCHEDULING (consumed at the tick) ----------------------
+  // chr_inval_w = a generation just lost its validity, so the bits that carry
+  // it have to be physically rewritten before S_FINISH re-arms the flag.
+  wire        chr_inval_w = (pend_a_valid & ~avf_next_w)
+                          | (pend_valid   & ~bvf_next_w);
+  // the drain window, evaluated at the tick like every other generation term
+  wire        pend_drain_w = resync_en & saw_ack & recov_active
+                           & ~caught_w & ~confirm_a_w;
+  wire        chr_scan_w  = (chr_pend_nz & (recovery_now_w | pend_drain_w
+                                            | chr_scrub_r | chr_inval_w))
+                          | chr_forceall | pend_owed;
 
   // port-A write nets to shadow BRAMs.
   // Per ping-pong bank there is exactly ONE writer per cycle: the tap writes
@@ -1250,18 +1334,29 @@ module nes_bridge(
     oam_q       <= oam[cpy_i[7:0]];        // copy source (S_CPY)
     oam_frz_q   <= oam_frz[oam_i[7:0]];    // serializer source (S_OAM*)
     pal_q       <= pal[pal_i[4:0]];        // register-array mux lands in a register
-    // v2.4 CHR ring reads: simple-dual-port template (sync read here, sync
-    // write in the tap below).  The serializer only ever reads the FROZEN
-    // slice [dsc_i, l_dsc_end) / [cb_rp, l_cb_end) while the tap appends at
-    // dsc_wp/cb_wp >= those ends, so read-during-write never lands on a byte
-    // whose value is USED (the one look-ahead read at dsc_i==l_dsc_end is
-    // discarded in favour of l_cb_end).
+    // CHR arrays, simple-dual-port template (sync read here, sync write in the
+    // tap / the FSM below).  chrmem is read at a REGISTERED address, so nothing
+    // combinational reaches its address port; chrdsc is read one descriptor
+    // ahead of the emitting cursor (the look-ahead at dsc_i==l_dsc_end is
+    // discarded in favour of l_cb_end); chrpend follows the S_NTA/S_NTB
+    // request/consume shape.  The tap writes chrmem/chrdsc and the FSM writes
+    // chrpend -- one writer per array per cycle, never two.
     chrdsc_q    <= chrdsc[dsc_i];
-    chrbuf_q    <= chrbuf[cb_rp];
+    // READ-DURING-WRITE, made DETERMINISTIC (v2.8).  The tap writes chrmem in
+    // every cycle it fires and the serializer reads it in the same cycle; on
+    // hardware the M9K's mixed-port behaviour for that collision is "old data",
+    // while iverilog hands back new data -- a simulation/silicon split on a byte
+    // that is being re-sent.  The bypass makes both say NEW, which is also the
+    // semantically right answer for a last-wins mirror.  This is the classic
+    // single-array bypass template: it does NOT mux two array reads, so the M9K
+    // INFERENCE rule in the header still holds.
+    chrmem_q    <= (chr_we && (chr_off == chr_ra_r)) ? chr_data
+                                                    : chrmem[chr_ra_r];
+    chrpend_q   <= chrpend[cp_a];
 
     if (rst) begin
       st<=S_IDLE; frame_seq_o<=0; frame_len_o<=0; status_o<=0;
-      live<=0; tick_pend<=0; saw_ack<=0; lost_r<=0; force_full<=0;
+      live<=0; tick_pend<=0; tick_accept<=0; saw_ack<=0; lost_r<=0; force_full<=0;
       lost_hold<=0; seal_hold<=0; pend_valid<=0; pend_a_valid<=0;
       pend_avf<=0; pend_bvf<=0; pal_pend_a<=0; pal_pend_b<=0;
       recov_active<=0; recov_seq<=0; ack_prev<=0; ack_skip<=0;
@@ -1271,28 +1366,34 @@ module nes_bridge(
       dbg_pal_sum<=0; dbg_pal_wcnt<=0;
       l_split_cnt<=3'd0; l_split_hdr<=8'd0; spl_i<=3'd0;
       l_cspl_cnt<=3'd0; l_cspl_hdr<=8'd0; l_cspl_go<=1'b0; cspl_i<=3'd0;
+      l_psp_cnt<=3'd0; l_psp_hdr<=8'd0; l_psp_go<=1'b0; psp_i<=3'd0;
       l_cwin_en<=1'b0; l_cwin<=64'd0; l_cwin_flags<=8'd0;
       l_cwsp_cnt<=3'd0; l_cwsp_hdr<=8'd0; l_cwsp_go<=1'b0; cwsp_i<=3'd0;
       cpy_run<=0; cpy_i<=9'd0;
-      cb_wp<=13'd0; cb_rp<=13'd0; dsc_wp<=8'd0; dsc_i<=8'd0;
+      cb_wp<=13'd0; dsc_wp<=8'd0; dsc_i<=8'd0;
       cb_open<=1'b0; cb_len<=8'd0; cb_next_off<=13'd0; cb_ovf<=1'b0;
-      l_dsc_end<=8'd0; l_cb_end<=13'd0; crun_k<=8'd0;
-      cur_coff<=13'd0; cur_cptr<=13'd0; cur_clen<=13'd0;
-      cb_cp<=13'd0; dsc_cp<=8'd0; chain_broken<=1'b0; l_chr_cov<=1'b0;
-      in_retx<=1'b0; l_fresh0<=13'd0; l_dsc_fresh0<=8'd0; big_skip<=1'b0;
-      // THE HISTORY MUST BE RESET, not just initialised.  rst pulses on the
-      // SNES reset strobe / IGR, which zeroes cb_cp/cb_rp/frame_seq_o and the
-      // renderer-written ack -- but the arrays kept PRE-RESET pointers, so the
-      // first post-reset ACK indexed hist[1..7] with pointers from another life.
-      // A small stale value passes the forward-only guard and drags cb_cp (and,
-      // on a recovery, cb_rp) forward over descriptors that were never emitted,
-      // deleting runs from the stream; a stale hist_cov=1 clears chain_broken on
-      // top of it.
-      for (rk=0; rk<8; rk=rk+1) begin
-        hist_cb[rk]<=13'd0; hist_dsc[rk]<=8'd0; hist_cov[rk]<=1'b0;
-      end
+      l_dsc_end<=8'd0; l_cb_end<=13'd0; crun_k<=8'd0; chr_ra_r<=13'd0;
+      cur_coff<=13'd0; cur_ccnt<=13'd0; cur_clen<=13'd0;
+      cp_i<=10'd0; cp_inrun<=1'b0; cp_start<=9'd0; cp_len<=5'd0; cp_bk<=8'd0;
+      cp_base<=9'd0; cp_nresume<=9'd0;
+      chr_pend_emit<=13'd0; chr_pend_allow<=13'd0; pend_drain<=1'b0; cp_any<=1'b0;
+      chr_debt<=1'b0; cp_dany<=1'b0; chr_defer_r<=1'b0;
+      cb_tiles<=9'd0; cb_last_tile<=9'd0; cb_tile_vld<=1'b0;
+      // THE PENDING BITMAP MUST BE MATERIALLY CLEARED, not just declared empty.
+      // rst pulses on the SNES reset strobe / IGR, which zeroes frame_seq_o and
+      // the renderer-written ack; stale tile bits would make the first
+      // post-reset recovery re-ship tiles from another life.  The array is an
+      // M9K, so it CANNOT be swept with a for-loop in this reset branch (a
+      // 512-wide simultaneous write uninfers the RAM into 1024 FFs -- see M9K
+      // INFERENCE).  Instead chr_scrub_r is armed, which makes the first frame
+      // after reset run the scan once with both generations invalid: every cell
+      // is rewritten to {0,0} and chr_pend_nz falls back to 0.  It costs ~1k
+      // cycles, once, and emits nothing.
+      chr_pend_nz<=1'b1; chr_scrub_r<=1'b1; chr_forceall<=1'b0;
+      l_forceall<=1'b0; chr_scan_go<=1'b0;
       chr_emit<=13'd0;
     end else begin
+      tick_accept <= 1'b0;                 // 1-cycle pulse (set at the accept)
       if (frame_tick) tick_pend <= 1'b1;   // never drop a tick (cleared on accept)
       if (frame_ack_i != 16'd0) saw_ack <= 1'b1;
       // LOSS THRESHOLD IS >=3, NOT >=2 (cost a hardware iteration -- periodic
@@ -1328,22 +1429,11 @@ module nes_bridge(
       // is rejected on both counts; a stall is a stable, in-range one, so it is
       // accepted and scored as the skip it really is.
       if ((frame_ack_i != ack_prev) && ack_stable_w && ack_plaus_w) begin
-        if (saw_ack && (ack_fwd_w >= 16'd2)) begin
-          ack_skip     <= 1'b1;
-          // A jump bigger than the publish history is a hole this window cannot
-          // repair (it holds ONE frame): re-sending into it just spends the
-          // bandwidth the renderer needs for the CURRENT screen.  Measured on a
-          // 100-frame blackout: retransmitting ended 3938 bytes wrong against
-          // 3792 for doing nothing.  Latch it and leave CHR retransmission off
-          // until something commits again -- the skip itself is still scored, so
-          // the NT recovery algebra is untouched.
-          big_skip     <= (ack_fwd_w > 16'd8);
-          // the CHR chain of "everything before the committed tail was applied"
-          // is broken from HERE (not at the tick): a frame published before the
-          // skip must stop being usable as commit evidence immediately, even if
-          // the ACK still names it on the next tick.
-          chain_broken <= 1'b1;
-        end
+        // v2.7: this used to break the CHR "everything before the committed
+        // tail was applied" chain as well.  There is no chain any more -- the
+        // tiles a skipped frame owed are still marked in chrpend and the bytes
+        // are still in the mirror -- so a skip only has to ARM the recovery.
+        if (saw_ack && (ack_fwd_w >= 16'd2)) ack_skip <= 1'b1;
         ack_prev <= frame_ack_i;
       end
       // (generation-A confirmation is processed AT THE TICK, guarded by
@@ -1399,87 +1489,60 @@ module nes_bridge(
             if (!pal_dirty0[pal_eff]) pal_cnt0 <= pal_cnt0 + 6'd1;
           end
         end
-        // ---- PER-CYCLE WINDOW CLAMP (must NOT be inside `if (chr_we)`) ------
-        // The test is on the WINDOW ITSELF (cb_rp - cb_cp), not on the room
-        // flags.  Room-based detection is too late and self-defeating: once
-        // cb_used_h has aliased past CB_SZ it reads SMALL, so cb_room_h says
-        // "space available" with the ring full and the clamp never fires --
-        // which is precisely how a tick-rate-only bound produced 1944 drops and
-        // cb_ovf at 2800 B/frame while 2200 and 3200 were clean.  The window is
-        // a quantity this module CONTROLS, so clamping it every cycle keeps
-        // occupancy bounded.
-        // BE HONEST ABOUT WHAT THIS DOES NOT DO: cb_used_h STILL ALIASES -- 2941
-        // cycles of it at 2800 B/frame, 2214 at 3400, with samples as extreme as
-        // used_h=208 while used_d=8191.  The clamp bounds the WINDOW, not that
-        // derived difference.  It is safe because nothing load-bearing reads
-        // cb_used_h: its only consumers are commit_fwd_q and trim_c_q/trim_n_q,
-        // and BOTH fail in the safe direction when aliased -- commit_fwd_q
-        // suppresses a commit (payload is retained, never retired early) and the
-        // trim tests suppress a trim (the window is kept, and the per-cycle
-        // clamp below catches it anyway).  The thing that must never alias is
-        // the window itself, and that is what is clamped here.
-        // AND IT HAS TO BE EVERY CYCLE, not every write: the window grows while
-        // the SERIALIZER walks (cb_rp advances) and a real game is not writing
-        // CHR at that moment, so a clamp gated on chr_we simply never runs
-        // during the very phase that grows it -- measured: the same 1944 drops,
-        // unchanged, until this moved out of the tap's if.
-        // KNOWN AND ACCEPTED (documented rather than fixed, on purpose): this
-        // pair can land MID-RUN.  The serializer takes a one-descriptor look
-        // ahead in S_CR1, so while a run is being emitted cb_rp is inside run K
-        // while dsc_i already points at K+1; clamping in that window stores a
-        // tail that is not a run boundary (measured signature: rp=424 dsc_i=169
-        // with the descriptor's ptr=425, 3-43 occurrences per multi-million-cycle
-        // run at 3100/3400/3700 B/frame).  It SELF-CORRECTS at the next S_CR3,
-        // which re-parks cb_rp from the descriptor, so the emitted stream stays
-        // correct and every golden is unaffected.  The real cost is narrow: up
-        // to 254 bytes of the run in flight drop out of the retransmission
-        // window.  Nothing load-bearing reads the tail as a run boundary before
-        // S_CR3 re-parks it.  The cheap fix (clamp to cur_cptr / dsc_i-1 while
-        // the FSM is inside a run) is deferred to the same follow-up as
-        // ack_moved below -- no logic changes this round.
-        if (chr_hold & ((bk_n_w > RETX_WINDOW) | (dk_n_w > RETX_DSC)
-                        | ~cb_room_h)) begin
-          cb_cp        <= cb_rp;
-          dsc_cp       <= dsc_i;
-          chain_broken <= 1'b1;   // abandoned bytes stop being evidence
-        end
-        // -------- CHR-RAM tap (v2.4): append payload + open runs, 1 cycle -----
-        // Everything below is a single-cycle event: at most ONE chrbuf write
+        // -------- CHR-RAM tap (v2.7): mirror + run descriptors, 1 cycle ------
+        // Everything below is a single-cycle event: at most ONE chrmem write
         // (the data byte) and ONE chrdsc write (only when a run opens), on two
-        // DIFFERENT arrays.  That is the whole point of storing `ptr` instead
-        // of `len` in the descriptor -- see the CHR RING block.
+        // DIFFERENT arrays.  That is the whole point of storing `cnt` instead
+        // of `len` in the descriptor -- see the CHR MIRROR + PENDING block.
         // A frame_tick is DEFERRED while chr_we is high (S_IDLE accept), so a
         // tap and a tick never race for the same cycle and the byte always
         // belongs to the CLOSING frame -- the same convention nt_rmw uses, and
         // the one the stimulus order (`4` lines before the `5` line) encodes.
+        // GONE WITH THE RING: the per-cycle window clamp that used to sit here
+        // (outside the `if (chr_we)`, because the window also grew while the
+        // SERIALIZER walked).  It existed to stop cb_used_h aliasing past
+        // CB_SZ between ticks and to bound a retransmission window this design
+        // no longer has -- there is no window, no committed tail and no
+        // occupancy that a tap can push past.
         if (chr_we) begin
           if (live) chr_any1 <= 1'b1; else chr_any0 <= 1'b1;
-          // PER-CYCLE BOUND ON THE RETRANSMISSION WINDOW.  The trim at the tick
-          // runs ONCE PER FRAME while the tap runs every cycle, so between two
-          // ticks cb_used_h can pass CB_SZ and ALIAS: measured used_h=1806 while
-          // used_d=4400 for 131k cycles, i.e. cb_room_h reporting "space" with
-          // the ring full, and the `bk <= cb_used_h` window test -- whose whole
-          // job is to reject a wrapped distance -- being evaluated against the
-          // already-wrapped value, so the trim was suppressed exactly when the
-          // ring was fullest (a resonance band: clean at 2200/2500, 1944 drops
-          // with cb_ovf at 2800, clean again at 3200).
-          // The bound therefore has to live where the pressure is, in the tap.
-          // This is the old "reclaim", and it is NOT dead code any more: since
-          // the quota fence the drain cursor moves ahead of the committed tail
-          // during the frame, so the two views are no longer identical after a
-          // rewind.  Tail and descriptor move in ONE statement -- they must never
-          // disagree.
+          // THE MIRROR ALWAYS TAKES THE BYTE, room or no room.  It is indexed
+          // by offset, so it has no capacity to run out of and no ordering to
+          // preserve; this unconditional write is what makes the CHR state
+          // idempotent and the re-send lossless.
+          chrmem[chr_off] <= chr_data;
+          // TILE ACCOUNTING for the resend allowance (see CHR_TILE_CAP).  One
+          // count per TRANSITION of chr_off[12:4] -- OR PER NEW RUN, and the
+          // second term is not decoration: the renderer accumulates nes_cq_nt
+          // PER RUN (nes_render.a65 ~l.8055, the ((off+cl-1)>>4)-(off>>4)+1
+          // form at ~l.7874-7887), so a tile that TWO runs straddle costs it
+          // TWO descriptor entries.  Counting only transitions of the tile
+          // index made this side under-count exactly that case and let the
+          // frame exceed the renderer's ceiling: measured 201 tiles against a
+          // cap of 192 on l2_senjou with rendering ON, and 200 on megaman1's
+          // S1.  cb_newrun is already computed alongside (this adds fan-out,
+          // not depth).  Expected effect: 201 -> 192 and 200 -> 192, with
+          // loss/latency/bandwidth byte-identical.
+          if (!cb_tile_vld || (chr_off[12:4] != cb_last_tile) || cb_newrun) begin
+            if (cb_tiles != 9'd511) cb_tiles <= cb_tiles + 9'd1;
+            cb_last_tile <= chr_off[12:4];
+            cb_tile_vld  <= 1'b1;
+          end
           if (!cb_room) begin
-            // Ring full: DROP the byte and close the run, so the loss shows up
-            // as a missing run, never as a hole inside one.  Unreachable in the
-            // 13-trace corpus (peak ~2250 of 4096); latched for the breadcrumb.
-            cb_ovf  <= 1'b1;
-            cb_open <= 1'b0;
+            // DESCRIPTOR ring full: drop the RUN (so a loss shows up as a
+            // missing run, never as a hole inside one), latch the breadcrumb,
+            // and force the next pend scan to mark every tile -- the data is in
+            // the mirror, so the next recovery re-ships it instead of losing
+            // it, which is strictly better than the v2.6 byte drop.
+            // Unreachable in the corpus: worst measured is ~90 descriptors per
+            // frame against 256, and they are drained every frame now.
+            cb_ovf       <= 1'b1;
+            cb_open      <= 1'b0;
+            chr_forceall <= 1'b1;
           end else begin
-            chrbuf[cb_wp] <= chr_data;
-            cb_wp         <= cb_wp + 13'd1;
+            cb_wp <= cb_wp + 13'd1;
             if (cb_newrun) begin
-              chrdsc[dsc_wp] <= {chr_off, cb_wp};   // ptr = PRE-increment head
+              chrdsc[dsc_wp] <= {chr_off, cb_wp};   // cnt = PRE-increment count
               dsc_wp         <= dsc_wp + 8'd1;
               cb_len         <= 8'd1;
             end else cb_len <= cb_len + 8'd1;
@@ -1509,57 +1572,78 @@ module nes_bridge(
         // BEFORE that byte's pointer bump, orphaning it between two frames.
         S_IDLE: if ((frame_tick | tick_pend) && !nt_rmw && !nt_we && !chr_we) begin
           tick_pend<= 1'b0;
+          tick_accept <= 1'b1;      // reseeds the capture modules, one cycle
+                                    // after this latch (see the port comment)
           // v2.4: freeze the CHR payload/descriptor slice of the closing frame
           // and force the next write to open a fresh run (runs NEVER span
           // frames -- lockstep with bridge_sim begin_frame()).
           l_dsc_end<= dsc_wp;
           l_cb_end <= cb_wp;
           cb_open  <= 1'b0;
-          // v2.6 ACK-GATED DRAIN: retire what the ACK proves applied, then --
-          // on a recovery frame -- pull the drain cursor back to the (possibly
-          // just advanced) committed tail so this frame re-emits every
-          // unconfirmed run.  With chr_hold=0 (byte-exact gate tb, or before
-          // the renderer's first ACK) the tail simply tracks the drain and the
-          // whole mechanism is inert.
-          l_chr_cov <= chr_cov_w;
-          if (chr_hold) begin
-            cb_cp  <= cb_cp_next;
-            dsc_cp <= dsc_cp_next;
-            if (chr_commit_w) begin chain_broken <= 1'b0; big_skip <= 1'b0; end
-            if (chr_rewind_w) begin
-              cb_rp        <= cb_cp_next;  // REWIND: re-emit the unconfirmed runs
-              dsc_i        <= dsc_cp_next;
-              l_fresh0     <= cb_rp;       // ... and remember where FRESH starts
-              l_dsc_fresh0 <= dsc_i;
-            end
-            // THE FENCE IS PER-FRAME.  Latching in_retx only on a rewind left it
-            // set when a frame ended before reaching its fence, and the NEXT
-            // frame -- which had not rewound and whose fence was stale -- then
-            // jumped the drain BACKWARDS onto descriptors the tap had already
-            // recycled: garbage runs, and the whole CHR-RAM wrong (measured:
-            // 8192 of 8192 bytes mismatched at Mega-Man rate).  Assign it
-            // unconditionally at every tick.
-            in_retx <= chr_rewind_w & (cb_rp != cb_cp_next);
-            if (chr_trim_w) begin
-              // TRIM: the retransmission window is over budget (or the ring is
-              // past half full).  Give it up -- those bytes are abandoned, which
-              // is exactly what v2.5 did with every unconfirmed byte -- so that
-              // FRESH data keeps the whole frame and the tap keeps its room.
-              // Written AFTER the commit assignment on purpose: cb_rp is at or
-              // ahead of cb_cp_next whenever the trim tests pass, so the tail
-              // only ever moves forward.
-              cb_cp  <= cb_rp;
-              dsc_cp <= dsc_i;
-            end
-          end else begin
-            cb_cp  <= cb_rp;
-            dsc_cp <= dsc_i;
-          end
+          // v2.7 PENDING-SCAN SCHEDULING.  The scan (S_CP*) has three jobs: it
+          // MATERIALISES a generation invalidation into the bitmap, it DELIVERS
+          // the unconfirmed tiles on a recovery frame, and it applies the
+          // descriptor-overflow force-mark.  It is skipped whenever there is
+          // none of the three to do -- which is EVERY frame of the byte-exact
+          // gate (resync_en=0 never recovers, and an ack frozen at 0 never
+          // invalidates a generation), so the goldens do not even pay its
+          // cycles.
+          //
+          // THE INVALIDATION MUST BE MATERIALISED IN THE SAME FRAME IT HAPPENS.
+          // The valid flags are re-armed unconditionally at S_FINISH
+          // (pend_valid <= 1), exactly as NT does, and NT gets away with it
+          // because its scan rewrites all 2048 cells EVERY frame.  The CHR scan
+          // is conditional, so a generation dropped at the tick and re-armed at
+          // S_FINISH would RESURRECT every stale bit still in the array the
+          // next time a fresh mark set the flag -- the union would grow without
+          // bound, which is precisely the degeneration the two generations
+          // exist to prevent.  chr_scrub_r is what carries the request when the
+          // bitmap is empty at the moment of the invalidation.
+          chr_scan_go <= chr_scan_w;
+          chr_scrub_r <= chr_scan_w ? 1'b0 : (chr_scrub_r | chr_inval_w);
+          l_forceall   <= chr_forceall;
+          chr_forceall <= 1'b0;
+          cp_i     <= 10'd0;
+          cp_inrun <= 1'b0;
+          cp_any   <= 1'b0;
+          cp_nresume    <= cp_base;     // no delivery this pass -> same start
+          chr_pend_emit <= 13'd0;
+          pend_drain    <= pend_drain_w & ~recovery_now_w;
+          // What is left of the renderer's TILE ceiling after this frame's
+          // fresh capture, in bytes.  Zero when the previous frame left a
+          // CHR_WSTOP backlog: that frame already owes the renderer a full
+          // slice, so it gets no resend on top.
+          chr_pend_allow <= (chr_defer_r | (cb_tiles >= CHR_TILE_CAP)) ? 13'd0
+                          : {(CHR_TILE_CAP - cb_tiles), 4'd0};
+          cb_tiles     <= 9'd0;
+          cb_tile_vld  <= 1'b0;
+          chr_defer_r  <= 1'b0;
+          cp_dany      <= 1'b0;
           live     <= ~live;                 // flip: filled bank becomes frozen
           new_seq  <= frame_seq_o + 16'd1;
           mb_wbuf  <= ~frame_seq_o[0];
           l_frame  <= snap_frame;
-          l_ntarr  <= snap_ntarr;
+          // FRAME_HDR.flags[5:4], Fase 3 SS2.2: the field now comes from the
+          // START OF THE DISPLAY, not the frame CLOSE.  Change of SEMANTICS,
+          // not of format -- and it is the v1.2 "the close-time snapshot grabs
+          // the HUD" fix in the arrangement dimension: Dragon Buster runs 702
+          // of 908 gameplay frames with (display start, close) = (1A, 1B), so
+          // the close-time value made the renderer draw the whole frame with
+          // the status-bar page.  It is wrong even when cnt == 1, which is why
+          // this is NOT gated on the command being emitted.
+          //   Fallback when the frame ran its whole display with rendering off
+          //   (snap_psp_frozen == 0): the CLOSE-time snap_ntarr, which is
+          //   literally today's behaviour => byte-identical.
+          //   Residual, documented: in hardware snap_ntarr comes from the mmu's
+          //   ntarr_of(raw 2-bit mirror), and for the eight-1KB-window family
+          //   (95/118/154/163) that partition rule can name a different
+          //   arrangement than psp_legacy_of(nt_snap_code) would.  It only
+          //   shows in this rendering-off branch, where nothing is displayed;
+          //   and if the live code is NON-CLASSIC the 0x16 is emitted anyway
+          //   (psp_classic0 is computed from the SAME psp_pay0_eff) and takes
+          //   precedence over the field.
+          l_ntarr  <= snap_psp_frozen ? psp_legacy_of(psp_pay0_eff[3:0])
+                                      : snap_ntarr;
           l_ntsel  <= snap_loopy_t[11:10];
           l_ppuctrl<= snap_ppuctrl; l_ppumask<= snap_ppumask;
           l_sx <= {snap_loopy_t[4:0],  snap_fine_x};
@@ -1608,15 +1692,37 @@ module nes_bridge(
           l_cwsp_cnt <= snap_cwin_cnt;
           l_cwsp_hdr <= {snap_cwin_ovf, 4'd0, snap_cwin_cnt};
           l_cwsp_go  <= snap_chr_win_en & (snap_cwin_cnt >= 3'd2);
+          // Fase 3 CMD_PPU_SPLITS 0x16: raw (scanline, payload) pairs, nothing
+          // to derive.  The EMISSION GATE is latched here so the FSM branch
+          // reads a single register:
+          //     cnt >= 2  OR  entry0's code is NOT classic
+          // The second clause is what makes cnt == 1 a legal command -- see the
+          // OP_PPU_SPLITS comment.  Both terms use psp_pay0_eff, the
+          // rendering-off-corrected entry 0, so the command, its payload and
+          // FRAME_HDR.flags[5:4] can never disagree about which value the frame
+          // started on.
+          l_psp_cnt <= snap_psp_cnt;
+          l_psp_hdr <= {snap_psp_ovf, 4'd0, snap_psp_cnt};
+          l_psp_go  <= (snap_psp_cnt >= 3'd2) | ~psp_classic0;
           for (si=0; si<4; si=si+1) begin
             l_spl_sl[si] <= snap_spl_sl[si*8 +: 8];
             l_spl_sx[si] <= {snap_spl_t[si*15 +: 5],    snap_spl_fx[si*3 +: 3]};
             l_spl_sy[si] <= {snap_spl_t[si*15+5 +: 5],  snap_spl_t[si*15+12 +: 3]};
             l_spl_nt[si] <= snap_spl_t[si*15+10 +: 2];
             l_cspl_sl[si]<= snap_cspl_sl[si*8 +: 8];
-            l_cspl_bk[si]<= snap_cspl_bank[si*8 +: 8];
+            l_cspl_bk[si]<= snap_cspl_bank[si*16 +: 16];
             l_cwsp_sl[si]<= snap_cwin_sl[si*8 +: 8];
             l_cwsp_w[si] <= snap_cwin_win[si*64 +: 64];
+          end
+          // The 0x16 arrays are 3 deep (K=3), so they get their own loop rather
+          // than riding the 4-deep one above.  Entry 0 takes the
+          // rendering-off-corrected payload; 1..2 are raw (they only EXIST when
+          // the capture froze, so the correction is a no-op for them by
+          // construction -- writing it as a select keeps the loop a single
+          // indexed assignment).
+          for (pi=0; pi<3; pi=pi+1) begin
+            l_psp_sl[pi] <= snap_psp_sl[pi*8 +: 8];
+            l_psp_py[pi] <= (pi == 0) ? psp_pay0_eff : snap_psp_pay[pi*5 +: 5];
           end
           force_full <= resync_en & ~saw_ack;          // BOOT only: true full
           lost_hold  <= recovery_now_w;                // recovery: delta union
@@ -1716,6 +1822,7 @@ module nes_bridge(
             if (l_cwin_en) begin st<=S_CWST; sub<=0; end  // v2.5: CMD_CHR_STATE8
             else if (l_cspl_go) st<=S_CSPL_OP;            // v2.3: emit CMD_CHR_SPLITS
             else if (l_split_cnt >= 3'd2) st<=S_SPL_OP;   // v1.3: emit CMD_SPLITS
+            else if (l_psp_go) st<=S_PSP_OP;             // Fase 3: emit CMD_PPU_SPLITS
             else if (pal_present) st<=S_PAL;
             else begin st<=S_NTA; nt_i<=0; nt_inrun<=1'b0; end
           end else sub<=sub+4'd1;
@@ -1745,6 +1852,7 @@ module nes_bridge(
           if (sub==4'd9) begin
             if (l_cwsp_go) st<=S_CWSP_OP;                 // v2.5: CMD_CHR_SPLITS8
             else if (l_split_cnt >= 3'd2) st<=S_SPL_OP;   // v1.3: CMD_SPLITS
+            else if (l_psp_go) st<=S_PSP_OP;             // Fase 3: CMD_PPU_SPLITS
             else if (pal_present) st<=S_PAL;
             else begin st<=S_NTA; nt_i<=0; nt_inrun<=1'b0; end
           end else sub<=sub+4'd1;
@@ -1788,6 +1896,7 @@ module nes_bridge(
             // exit = the SAME decision S_CWST took after the last 0x14 byte
             if (cwsp_i+3'd1 >= l_cwsp_cnt) begin
               if (l_split_cnt >= 3'd2) st<=S_SPL_OP;
+              else if (l_psp_go) st<=S_PSP_OP;
               else if (pal_present) st<=S_PAL;
               else begin st<=S_NTA; nt_i<=0; nt_inrun<=1'b0; end
             end else begin cwsp_i<=cwsp_i+3'd1; sub<=4'd0; st<=S_CWSP_LD; end
@@ -1817,15 +1926,23 @@ module nes_bridge(
         end
         S_CSPL_E: begin
           mb_we<=1'b1; mb_waddr<=wptr; wptr<=wptr+13'd1;
+          // v2.9: THREE bytes per entry -- scanline, slot0 bank, slot1 bank.
+          // s1 is ALWAYS emitted, and in 8K mode it carries the same value the
+          // 0x12 publishes there (the capture applies `s1_present ? s1 : 0`),
+          // so a 0x13 entry and a CMD_CHR_STATE payload are the same tuple.
+          // Before this the command only carried slot 0 and a game that split
+          // on the slot-1 half emitted nothing at all.
           case (sub)
             0: begin mb_wdata<=cur_csl;         xor_acc<=xor_acc^cur_csl; end
-            1: begin mb_wdata<=cur_cbk;         xor_acc<=xor_acc^cur_cbk; end
+            1: begin mb_wdata<=cur_cbk[7:0];    xor_acc<=xor_acc^cur_cbk[7:0]; end
+            2: begin mb_wdata<=cur_cbk[15:8];   xor_acc<=xor_acc^cur_cbk[15:8]; end
           endcase
-          if (sub==4'd1) begin
+          if (sub==4'd2) begin
             // exit = the SAME decision the pre-v2.3 chain took at the end of
             // S_CHRST (scroll splits -> palette -> nametable)
             if (cspl_i+3'd1 >= l_cspl_cnt) begin
               if (l_split_cnt >= 3'd2) st<=S_SPL_OP;
+              else if (l_psp_go) st<=S_PSP_OP;
               else if (pal_present) st<=S_PAL;
               else begin st<=S_NTA; nt_i<=0; nt_inrun<=1'b0; end
             end else begin cspl_i<=cspl_i+3'd1; sub<=4'd0; st<=S_CSPL_LD; end
@@ -1862,9 +1979,60 @@ module nes_bridge(
           endcase
           if (sub==4'd3) begin
             if (spl_i+3'd1 >= l_split_cnt) begin
-              if (pal_present) st<=S_PAL;
+              if (l_psp_go) st<=S_PSP_OP;
+              else if (pal_present) st<=S_PAL;
               else begin st<=S_NTA; nt_i<=0; nt_inrun<=1'b0; end
             end else begin spl_i<=spl_i+3'd1; sub<=4'd0; st<=S_SPL_LD; end
+          end else sub<=sub+4'd1;
+        end
+
+        // -------- CMD_PPU_SPLITS (Fase 3): 16 hdr(ovf|cnt) cnt x [sl pay] -----
+        // Emitted only when l_psp_go, which is `cnt>=2 || entry0 non-classic`,
+        // so every frame whose arrangement AND PPUCTRL[4] are classic and
+        // static walks EXACTLY the pre-Fase-3 state chain and its bytes are
+        // unchanged.  UNLIKE its siblings this command CAN carry cnt==1 (see
+        // the OP_PPU_SPLITS comment) -- a walker that assumes cnt>=2 mis-parses
+        // the stream from that byte on.
+        // Same request/consume split as S_CSPL_*: S_PSP_LD consumes
+        // l_psp_*[psp_i] into cur_p* (the 4-deep indexed array read stays OFF
+        // the mb_wdata/xor cone -- SERIALIZER TIMING), S_PSP_E emits the 2
+        // bytes from those single registers.
+        S_PSP_OP: begin
+          mb_we<=1'b1; mb_waddr<=wptr; wptr<=wptr+13'd1;
+          mb_wdata<=OP_PPU_SPLITS; xor_acc<=xor_acc^OP_PPU_SPLITS;
+          st<=S_PSP_HDR;
+        end
+        S_PSP_HDR: begin
+          mb_we<=1'b1; mb_waddr<=wptr; wptr<=wptr+13'd1;
+          mb_wdata<=l_psp_hdr; xor_acc<=xor_acc^l_psp_hdr;
+          psp_i<=3'd0; sub<=4'd0; st<=S_PSP_LD;
+        end
+        S_PSP_LD: begin
+          // INVARIANT: l_psp_cnt <= 3, so psp_i only ever reaches 2 and the
+          // 2-bit index never addresses a 4th element of these 3-deep arrays.
+          // The capture cannot produce more (psp_cnt stops incrementing at 3
+          // and the overflow branch never increments), and every tb clamps to
+          // 3.  If K is ever raised, RAISE THE ARRAYS FIRST -- widening cnt
+          // alone would read an element that does not exist.
+          cur_psl<=l_psp_sl[psp_i[1:0]]; cur_ppy<=l_psp_py[psp_i[1:0]];
+          st<=S_PSP_E;
+        end
+        S_PSP_E: begin
+          mb_we<=1'b1; mb_waddr<=wptr; wptr<=wptr+13'd1;
+          case (sub)
+            0: begin mb_wdata<=cur_psl; xor_acc<=xor_acc^cur_psl; end
+            // bits 7:5 of the payload byte are protocol padding; the
+            // capture does not store them (see its header), so they are
+            // re-added here
+            1: begin mb_wdata<={3'b000,cur_ppy};
+                     xor_acc<=xor_acc^{3'b000,cur_ppy}; end
+          endcase
+          if (sub==4'd1) begin
+            // exit = the SAME decision S_SPL_E takes after its last entry
+            if (psp_i+3'd1 >= l_psp_cnt) begin
+              if (pal_present) st<=S_PAL;
+              else begin st<=S_NTA; nt_i<=0; nt_inrun<=1'b0; end
+            end else begin psp_i<=psp_i+3'd1; sub<=4'd0; st<=S_PSP_LD; end
           end else sub<=sub+4'd1;
         end
 
@@ -1988,6 +2156,11 @@ module nes_bridge(
         end
 
         // -------- CHR_BANK (0..2): 40 slot bank --------
+        // -------- CHR_BANK (0..2): 40 slot bank --------
+        // The CHR section that follows is: [pend re-send runs] [fresh runs].
+        // The pend scan goes FIRST so that, for a tile touched by both, the
+        // FRESH run -- the write-order, byte-exact one -- is what lands last at
+        // the renderer's last-wins shadow.
         S_CBANK: begin
           case (sub)
             0: if (l_s0chg) begin mb_we<=1'b1; mb_waddr<=wptr; mb_wdata<=OP_CHR_BANK;
@@ -1999,15 +2172,127 @@ module nes_bridge(
                      wptr<=wptr+13'd1; sub<=4'd3; end
             3: if (l_s1chg) begin mb_we<=1'b1; mb_waddr<=wptr; mb_wdata<=OP_CHR_BANK;
                      xor_acc<=xor_acc^OP_CHR_BANK; wptr<=wptr+13'd1; sub<=4'd4; end
-               else st<=S_CR0;
+               else st<= chr_scan_go ? S_CP0 : S_CR0;
             4: begin mb_we<=1'b1; mb_waddr<=wptr; mb_wdata<=8'd1; xor_acc<=xor_acc^8'd1;
                      wptr<=wptr+13'd1; sub<=4'd5; end
             5: begin mb_we<=1'b1; mb_waddr<=wptr; mb_wdata<=l_s1b; xor_acc<=xor_acc^l_s1b;
-                     wptr<=wptr+13'd1; st<=S_CR0; end
+                     wptr<=wptr+13'd1; st<= chr_scan_go ? S_CP0 : S_CR0; end
           endcase
         end
+        // -------- CMD_CHR_RUN, PENDING RE-SEND (v2.7): 41 off_lo off_hi len --
+        // A TILE-GRANULAR scan of chrpend in ADDRESS order, payload read from
+        // the mirror.  This is the CHR analogue of the NT pending union: same
+        // two generations, same materialise-by-rewrite, same "delivery is not
+        // the same thing as rewrite" split.  What it does NOT share is a
+        // capacity limit -- the bytes live in chrmem, so a tile that does not
+        // fit this frame's allowance simply keeps its bit and is DEFERRED
+        // to the next recovery instead of being discarded.  That is the whole
+        // difference from the ring the design replaces.
+        //
+        // ONE REWRITE PER CELL PER FRAME, ON THE VISIT THAT CONSUMES IT -- the
+        // v2.7 NT lesson, and it bites here for the same reason: the visit that
+        // CLOSES a run leaves cp_i where it is, so the scan comes back to the
+        // same tile.  Rewriting on both visits would move the cell into A on
+        // the first and then read it as not-pending on the second, dropping it
+        // from a delta the consumer never saw.
+        S_CP0: begin
+          if (cp_i >= CHR_TILES) begin
+            if (cp_inrun) begin st<=S_CPH; sub<=0; end   // close the final run
+            else begin
+              // chr_pend_nz is the scan's own gate for the NEXT frame: if this
+              // pass left every cell clear there is nothing to walk again.
+              chr_pend_nz <= cp_any;
+              // The pass visited EVERY cell, so it recomputes the debt exactly.
+              chr_debt    <= cp_dany;
+              // The pass visited every tile, so the only thing to carry over is
+              // WHERE THE BUDGET RAN OUT.  A pass that could not DELIVER (a
+              // plain materialise) leaves the cursor alone -- but EVERY
+              // delivering frame must advance it, drain frames included: gating
+              // this on lost_hold alone made each drain restart at the same
+              // cp_base and re-offer the same tiles (head-of-line starvation).
+              if (cp_deliver) cp_base <= cp_nresume;
+              st <= S_CR0;
+            end
+          end else st<=S_CP1;   // chrpend_ra==cp_i now -> chrpend_q next cycle
+        end
+        S_CP1: begin
+          if (!cp_inrun) begin
+            // REWRITE.  Not sealing: just materialise the tick-latched validity
+            // (and the force-mark).  Sealing: a DELIVERED tile moves into A,
+            // and one the budget did not carry stays owed -- sealing it would
+            // let the confirmation of this recovery drop a tile that was never
+            // sent, which is exactly the loss this rewrite exists to prevent.
+            // ⚠️ TWO CORRECTIONS to what this comment used to say (v2.8):
+            //   * the undelivered tile now goes to the DEBT generation (D), not
+            //     to B -- chr_debt is what carries it across frames;
+            //   * "Mutation: seal unconditionally -> run_chrburst FAILs" is NO
+            //     LONGER TRUE.  That mutant is INERT against run_chrburst,
+            //     because the megaman1 cells there never reach caught_w at the
+            //     instant of the skip (the tb_skipburst consumer writes its ACK
+            //     at a fixed phase from a last_seq updated only after the whole
+            //     apply).  The gate that DOES discriminate this policy is the
+            //     synthetic lock-step one -- do not trust the old claim.
+            chrpend[cp_a] <= {cp_dnext, cp_anext, cp_bnext};
+            if (cp_dnext | cp_anext | cp_bnext) cp_any  <= 1'b1;
+            if (cp_dnext)                       cp_dany <= 1'b1;
+            if (cp_send) begin
+              cp_start      <= cp_a;
+              cp_len        <= 5'd1;
+              cp_inrun      <= 1'b1;
+              cp_nresume    <= cp_a + 9'd1;
+              chr_pend_emit <= chr_pend_emit + 13'd16;
+            end
+            cp_i<=cp_i+10'd1; st<=S_CP0;
+          end else begin
+            // ... and NEVER across the wrap: a run is a contiguous OFFSET
+            // range, so tile 0 always opens a new one (the same rule the tap
+            // applies to chr_off == 0).
+            if (cp_send && (cp_len < CHR_PEND_MAXT) && (cp_a != 9'd0)) begin
+              chrpend[cp_a] <= {cp_dnext, cp_anext, cp_bnext};
+              if (cp_dnext | cp_anext | cp_bnext) cp_any  <= 1'b1;
+              if (cp_dnext)                       cp_dany <= 1'b1;
+              cp_len        <= cp_len + 5'd1;
+              cp_nresume    <= cp_a + 9'd1;
+              chr_pend_emit <= chr_pend_emit + 13'd16;
+              cp_i<=cp_i+10'd1; st<=S_CP0;
+            end else begin
+              st<=S_CPH; sub<=0;   // close run (cp_i points at the breaking
+                                   // tile; it is re-visited, so it must NOT
+                                   // have been rewritten above)
+            end
+          end
+        end
+        S_CPH: begin
+          // off = tile*16 and len = tiles*16, both by pure bit-slicing: that is
+          // why the run is capped at 15 tiles (CHR_PEND_MAXT) -- 240 is the
+          // largest whole-tile length the one-byte len field holds.
+          mb_we<=1'b1; mb_waddr<=wptr; wptr<=wptr+13'd1;
+          case (sub)
+            0: begin mb_wdata<=OP_CHR_RUN;            xor_acc<=xor_acc^OP_CHR_RUN; end
+            1: begin mb_wdata<={cp_start[3:0],4'd0};  xor_acc<=xor_acc^{cp_start[3:0],4'd0}; end
+            2: begin mb_wdata<={3'd0,cp_start[8:4]};  xor_acc<=xor_acc^{3'd0,cp_start[8:4]}; end
+            3: begin mb_wdata<={cp_len[3:0],4'd0};    xor_acc<=xor_acc^{cp_len[3:0],4'd0}; end
+          endcase
+          if (sub==3) begin
+            st<=S_CPA; cp_bk<=8'd0; chr_ra_r<={cp_start,4'd0};
+          end else sub<=sub+4'd1;
+        end
+        S_CPA: st<=S_CPB;            // chrmem_ra==chr_ra_r -> chrmem_q next cycle
+        S_CPB: begin
+          mb_we<=1'b1; mb_waddr<=wptr; mb_wdata<=chrmem_q; wptr<=wptr+13'd1;
+          xor_acc<=xor_acc^chrmem_q;
+          chr_ra_r <= chr_ra_r + 13'd1;
+          chr_emit <= chr_emit + 13'd1;
+          // TERMINATION IS NOT ALLOWED TO DEPEND ON AN INVARIANT (house rule
+          // #1: never wedge).  cp_len is 1..15 by construction, so the equality
+          // always fires at 239 at the latest; the second exit makes that a
+          // hard ceiling instead of an assumption.
+          if ((cp_bk + 8'd1 == {cp_len[3:0],4'd0}) || (cp_bk == 8'd239)) begin
+            cp_inrun<=1'b0; st<=S_CP0;
+          end else begin cp_bk<=cp_bk+8'd1; st<=S_CPA; end
+        end
 
-        // -------- CMD_CHR_RUN (v2.4): 41 off_lo off_hi len data[len] ----------
+        // -------- CMD_CHR_RUN, FRESH (v2.4 shape): 41 off_lo off_hi len data --
         // Walk the frozen descriptor slice [dsc_i, l_dsc_end) in ARRIVAL order
         // (NOT sorted/deduplicated as the old dirty-bitmap scan was: two writes
         // to the same byte in one frame ship twice and the renderer's last-wins
@@ -2017,55 +2302,34 @@ module nes_bridge(
         // adds ZERO bytes (byte-identity of every CHR-ROM golden).
         // The walk stops on the MAILBOX valve only (CHR_WSTOP: a buffer is
         // 8192 B and wptr wraps silently).  There is deliberately NO per-frame
-        // byte cap on the drain -- see the RETX_WINDOW note: capping the drain
-        // drops data with a perfectly healthy consumer.  Whatever CHR_WSTOP
-        // holds back keeps its place in the ring (dsc_i / cb_rp stay where they
-        // are and the next frame's slice starts there), so it is DEFERRED, never
-        // lost.
+        // byte cap on the drain: capping it drops data with a perfectly healthy
+        // consumer (measured: 6585 drops at 2500 B/frame, 49955 at 3700, where
+        // the uncapped drain dropped ZERO).  Whatever CHR_WSTOP holds back
+        // keeps its place -- dsc_i stays where it is and the next frame's slice
+        // starts there -- so it is DEFERRED, never lost.
         S_CR0: begin
-          if (in_retx && (dsc_i == l_dsc_fresh0)) in_retx <= 1'b0;   // reached fresh
-          if (in_retx && (chr_emit >= RETX_CHUNK)) begin
-            // This frame's re-send quota is spent: jump to the fresh boundary so
-            // the NEW bytes still get the frame.
-            //
-            // BE PRECISE ABOUT WHAT THIS IS -- it is BOUNDED EFFORT, not an
-            // in-order trickle, and that is the intended design.  Advancing the
-            // committed tail here ABANDONS the remainder of the window
-            // ([quota_stop, l_fresh0)) in the same breath, so this frame's
-            // contribution is deliberately NON-CONTIGUOUS: [old_cp, quota_stop)
-            // then [l_fresh0, l_cb_end).  A later commit on this frame's seq
-            // retires that gap too -- which is consistent, not a leak, because
-            // the gap was already given up HERE, at the moment the quota ran
-            // out.  Net effect: each unconfirmed byte gets AT MOST ONE extra
-            // transmission attempt per loss episode.  The alternative (keep the
-            // tail and re-send the same head next frame) is precisely the
-            // head-of-line loop that blacked out the device, so it is rejected
-            // on purpose.  Stay in S_CR0 one cycle so the registered chrdsc read
-            // catches the cursor.
-            dsc_i   <= l_dsc_fresh0;
-            cb_rp   <= l_fresh0;
-            cb_cp   <= cb_rp;      // bounded-effort: these attempts are spent
-            dsc_cp  <= dsc_i;
-            in_retx <= 1'b0;
+          if ((dsc_i == l_dsc_end) || (wptr >= CHR_WSTOP)) begin
+            // The valve cut the FRESH slice short: record it so the NEXT frame
+            // spends its whole ceiling on the backlog instead of on a resend.
+            if (dsc_i != l_dsc_end) chr_defer_r <= 1'b1;
+            st<=S_OAMA; oam_i<=0;
           end
-          else if ((dsc_i == l_dsc_end) || (wptr >= CHR_WSTOP))
-            begin st<=S_OAMA; oam_i<=0; end
           else st<=S_CR1;          // chrdsc_ra==dsc_i now -> chrdsc_q next cycle
         end
         S_CR1: begin
           cur_coff <= chrdsc_q[25:13];
-          cur_cptr <= chrdsc_q[12:0];
+          cur_ccnt <= chrdsc_q[12:0];
           dsc_i    <= dsc_i + 8'd1;   // look ahead at the NEXT descriptor
           st       <= S_CR2;
         end
         S_CR2: st<=S_CR3;            // chrdsc_ra==dsc_i(+1) -> chrdsc_q next cycle
         S_CR3: begin
           // LENGTH IS DERIVED, never stored: the next run starts where this one
-          // ends, and the LAST run of the frame ends at the frozen head.  The
-          // 12-bit subtraction wraps with the ring, so a run straddling the
-          // wrap measures correctly.
-          cur_clen <= ((dsc_i == l_dsc_end) ? l_cb_end : chrdsc_q[12:0]) - cur_cptr;
-          cb_rp    <= cur_cptr;      // park the drain cursor (immune to orphans)
+          // ends, and the LAST run of the frame ends at the frozen byte count.
+          // The 13-bit subtraction wraps with the counter, so a run straddling
+          // the wrap measures correctly.
+          cur_clen <= ((dsc_i == l_dsc_end) ? l_cb_end : chrdsc_q[12:0]) - cur_ccnt;
+          chr_ra_r <= cur_coff;      // park the mirror cursor at the run start
           sub      <= 4'd0;
           st       <= S_CRH;
         end
@@ -2079,12 +2343,23 @@ module nes_bridge(
           endcase
           if (sub==3) begin st<=S_CRA; crun_k<=8'd0; end else sub<=sub+4'd1;
         end
-        S_CRA: st<=S_CRB;            // chrbuf_ra==cb_rp -> chrbuf_q next cycle
+        S_CRA: st<=S_CRB;            // chrmem_ra==chr_ra_r -> chrmem_q next cycle
         S_CRB: begin
-          mb_we<=1'b1; mb_waddr<=wptr; mb_wdata<=chrbuf_q; wptr<=wptr+13'd1;
-          xor_acc<=xor_acc^chrbuf_q;
-          cb_rp    <= cb_rp + 13'd1;
+          mb_we<=1'b1; mb_waddr<=wptr; mb_wdata<=chrmem_q; wptr<=wptr+13'd1;
+          xor_acc<=xor_acc^chrmem_q;
+          chr_ra_r <= chr_ra_r + 13'd1;
           chr_emit <= chr_emit + 13'd1;
+          // MARK THE TILE AS OWED.  Generation B (young) is set for the tile
+          // this byte belongs to; A is cleared ON PURPOSE -- a fresh write
+          // supersedes any older delivery of the same tile, and B is the
+          // conservative home (it only dies on a full catch-up, while A dies on
+          // the confirmation of a recovery that no longer describes this data).
+          // This and S_CP1 are the ONLY writers of chrpend, and they are in
+          // different states, so the array keeps a single writer per cycle.
+          // {D,A,B} = 001: D and A cleared because THIS run carries the tile
+          // and supersedes any older delivery of it; B is the conservative home.
+          chrpend[chr_ra_r[12:4]] <= 3'b001;
+          chr_pend_nz <= 1'b1;
           // TERMINATION IS NOT ALLOWED TO DEPEND ON AN INVARIANT (house rule
           // #1: never wedge).  cur_clen is 13 bits and crun_k is 8; the tap
           // guarantees 1 <= cur_clen <= 255, but if that ever broke (a
@@ -2141,17 +2416,6 @@ module nes_bridge(
           // is telling you the ring sizing assumption broke, not that the
           // renderer is behind (that is bit 0).
           if (cb_ovf) status_o[1] <= 1'b1;
-          // v2.6: record WHERE THIS FRAME'S CHR DRAIN STOPPED, indexed by the
-          // seq the renderer will ACK with.  dsc_i/cb_rp are exactly that
-          // point -- l_dsc_end/l_cb_end when the whole slice was shipped, or
-          // wherever a valve (CHR_WSTOP, or the RETX_CHUNK quota) cut it short --
-          // retiring exactly what WAS shipped is what makes a truncated frame
-          // safe to commit to.  hist_cov records whether the frame's drain
-          // STARTED at the committed tail (the weak condition; see the
-          // chain_broken note), which is what lets its ACK repair a broken chain.
-          hist_cb [new_seq[2:0]] <= cb_rp;
-          hist_dsc[new_seq[2:0]] <= dsc_i;
-          hist_cov[new_seq[2:0]] <= l_chr_cov;
           if (l_s0p) begin s0_prev<=l_s0b; s0_valid<=1'b1; end else s0_valid<=1'b0;
           if (l_s1p) begin s1_prev<=l_s1b; s1_valid<=1'b1; end else s1_valid<=1'b0;
           if (live) begin nt_cnt0<=0; chr_any0<=0; pal_dirty0<=0; pal_cnt0<=0; end
@@ -2222,8 +2486,37 @@ module nes_bridge(
   reg [1:0] joy_clock_prev;
   always @(posedge clk) begin
     if (rst) begin sr1<=8'hFF; sr2<=8'hFF; joy_clock_prev<=2'b00; end
-    else begin
+    // THE WHOLE BLOCK IS PACED BY ce_tick, not just the reload.  Gating only the
+    // reload left the SHIFT unpaced: joy_clock_prev updated every CLK2, so the
+    // falling-edge detect went true one CLK2 AFTER the edge and sr* moved at
+    // launch+1 -- while the SDC's rule 4c hands that path launch+2 (23.8 ns for
+    // an 11.9 ns relationship).  The -0.318 ns violation on
+    // bridge|sr2[7] -> NES_ROM_DATAr[5] stayed uncovered and the fit's PASS on
+    // that edge was empty.  With the block paced, BOTH edges on which sr* can
+    // change are ce edges, so 4c is exactly 2 and 4b is >= 13.
+    // Semantics are untouched: joy_clock is tapJ_clock, itself ce-registered,
+    // so comparing it against its value at the PREVIOUS ce still yields exactly
+    // one shift per falling edge; and the core can only observe joypad_data at
+    // a ce, with >= 9 ce between the clock falling and the next $4016 read.
+    // run_joypad (a real 6502 micro-ROM doing strobe + 10 reads) is the proof.
+    else if (ce_tick) begin
       joy_clock_prev <= joy_clock;
+      // TWO measured violations sit behind the pacing above.  (1) The RELOAD:
+      // ctrl_p1_i/ctrl_p2_i are the control-block registers the SNES writes on
+      // SNES_WR_end -- an edge with NO relation to the core's `ce`.  Reloading
+      // on every CLK2 while the strobe level is high made sr1/sr2 change on
+      // that arbitrary edge, so sr* -> NES core was genuinely SINGLE-CYCLE and
+      // the SDC's rule 4b (`-setup 2`, justified by "the sr* only move one CLK2
+      // after a ce") claimed a relationship the RTL did not provide: -0.058 ns,
+      // hidden by the constraint.  (2) The SHIFT: with joy_clock_prev updating
+      // every CLK2 the edge-detect fired one cycle AFTER the falling edge, so
+      // sr* moved at launch+1 while rule 4c gives that path launch+2 --
+      // -0.318 ns on sr2[7] -> NES_ROM_DATAr[5], left uncovered.
+      // With the pacing the sr* only move on a core tick and rule 4b is true.
+      // Semantics are preserved: the OUT0 strobe still reloads CONTINUOUSLY
+      // while high (just at ce granularity), still suppresses shifting while
+      // high, and the core can only observe the register at a ce anyway -- so
+      // it sees the same byte it saw before.
       if (joy_strobe) begin sr1<=ctrl_p1_i[7:0]; sr2<=ctrl_p2_i[7:0]; end
       else begin
         if (!joy_clock[0] && joy_clock_prev[0]) sr1<={sr1[6:0],1'b1};

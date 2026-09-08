@@ -250,6 +250,7 @@ reg  [15:0] nes_ctrl_p1   = 16'd0, nes_ctrl_p2 = 16'd0;
 // upload de CHR ($50/$60 -> VRAM, ~3ms); o renderer escreve 1 quando termina e
 // o core solta.  Limpo por SNES_reset_strobe (novo load/IGR refaz o handshake).
 reg         nes_go        = 1'b0;
+reg  [7:0]  nes_dbg_rend  = 8'd0;   // $2BDF: byte de debug do RENDERER (NDBG idx25 / +31)
 // SNES-CHR read client data register (declarado aqui p/ o mux SNES_DATA;
 // logica no bloco "SNES-CHR read client" adiante)
 reg  [7:0]  NES_CHR_DINr;
@@ -539,7 +540,8 @@ nes_wrap nes_core (
   .NESBOX_BUF_SEL(nes_buf_sel),
   .NESBOX_CTRL_P1(nes_ctrl_p1),
   .NESBOX_CTRL_P2(nes_ctrl_p2),
-  .NESBOX_GO(nes_go)
+  .NESBOX_GO(nes_go),
+  .NESBOX_DBG_REND(nes_dbg_rend)
 );
 
 reg [7:0] MCU_DINr;
@@ -657,6 +659,7 @@ always @(posedge CLK2) begin
     // novo boot/IGR: renderer refaz o handshake inteiro (GO volta a segurar o
     // core; ACK/BUF_SEL/CTRL zerados junto -- a bridge tambem reseta no strobe)
     nes_go        <= 1'b0;
+    nes_dbg_rend  <= 8'd0;
     nes_frame_ack <= 16'd0;
     nes_buf_sel   <= 1'b0;
     nes_ctrl_p1   <= 16'd0;
@@ -671,6 +674,7 @@ always @(posedge CLK2) begin
       4'hc: nes_ctrl_p2[7:0]    <= SNES_DATA;
       4'hd: nes_ctrl_p2[15:8]   <= SNES_DATA;
       4'he: nes_go              <= SNES_DATA[0];   // NES_GO (boot handshake)
+      4'hf: nes_dbg_rend        <= SNES_DATA;      // NES_DBG_REND (renderer -> NDBG)
       default: ;
     endcase
   end
@@ -691,7 +695,8 @@ wire [7:0] nesctl_dout =
     (SNES_ADDR[3:0]==4'hb) ? nes_ctrl_p1[15:8]      :
     (SNES_ADDR[3:0]==4'hc) ? nes_ctrl_p2[7:0]       :
     (SNES_ADDR[3:0]==4'hd) ? nes_ctrl_p2[15:8]      :
-    (SNES_ADDR[3:0]==4'he) ? {7'd0, nes_go}         : 8'h00;
+    (SNES_ADDR[3:0]==4'he) ? {7'd0, nes_go}         :
+    (SNES_ADDR[3:0]==4'hf) ? nes_dbg_rend           : 8'h00;
 
 parameter ST_R213F_ARMED     = 4'b0001;
 parameter ST_R213F_WAITBUS   = 4'b0010;

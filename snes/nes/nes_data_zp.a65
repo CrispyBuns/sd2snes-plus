@@ -181,3 +181,46 @@ nes_cqa_v        .word 0   ; V[7:0] lido no gate (16 bits p/ somar o custo)
 nes_cqa_cost     .word 0   ; custo do descritor em scanlines
 nes_cqa_fb       .byt 0    ; !=0 -> dreno em forced-blank (sem gate de V)
 nes_cqa_t        .word 0   ; cursor de tile do rebuild total
+
+; --- missao de perf (set/2026): scratch do caminho RAPIDO do
+;     nes_convert_range. O par e' CONTIGUO de proposito: 'sta nes_cr_tw'
+;     grava as duas celulas do par de colunas e 'lda nes_cr_tw+1' devolve a
+;     SEGUNDA delas ja' estendida a 16 bits -- o terceiro byte (nes_cr_twz)
+;     e' mantido ZERO pelo prologo do conversor, o que troca um
+;     'xba + and #$00ff' por um unico load. Fica no FIM do arquivo (regra da
+;     casa: var nova nao desloca endereco de var existente).
+nes_cr_tw        .word 0   ; par de celulas lido do shadow
+nes_cr_twz       .word 0   ; sentinela ZERO (nunca escrita fora do prologo)
+nes_hnr_fast     .byt 0    ; 1 = o run cabe INTEIRO na area de celulas de UM
+                           ; banco (caminho rapido do nes_handle_nt_run)
+nes_chrw_qlen    .word 0   ; bytes do payload do $15 que o fast-skip compara
+                           ; (2 + 9*cnt, par). Mora no DP porque o 65816 nao
+                           ; tem 'cpx long' -- o laco compara X contra ele.
+; --- v3.1 VOFS por faixa (nhs_vgap_build, contexto MAIN). So' o PONTEIRO
+;     de escrita mora no DP: o 65816 so' tem '[dp],y', e o resto do estado
+;     vive em $7F (bloco $7F4A80). Scratch PROPRIO do MAIN -- a costura do
+;     NMI (nes_vg_*) NUNCA e' compartilhada com ele (regra do canal/scratch
+;     por contexto: uma NMI no meio do build corromperia o cursor). ---
+; --- SONDA 1 (v3.1-dbg): scratch do byte de triagem publicado em
+;     NES_DBG_REND. Contexto NMI (nes_av_*), NUNCA compartilhado com o MAIN. ---
+nes_av_dbg       .byt 0    ; byte de triagem em construcao
+nes_av_dbga      .word 0   ; acumulador da amostra da tilemap
+nes_av_dbgv      .byt 0    ; V[7:0] / validade da metade PT0 (scratch)
+nes_av_dbgd      .word 0   ; acumulador de DIFERENCA da amostra da tilemap
+nes_sp_vtab      .word 0   ; -> nes_vgap_tab0/1 (word+banco CONTIGUOS =
+nes_sp_vtabb     .byt 0    ;   ponteiro long p/ [nes_sp_vtab],y)
+nes_sp_voff      .word 0   ; cursor de escrita dentro da tabela
+; --- v3.4 (Fase 3 SS4.2, CHR-RAM): particao do descritor de CHR na regiao
+;     SWAP. Na regiao NATURAL os tiles 0..511 sao CONTIGUOS ($1000..$1FFF),
+;     mas na SWAP as duas metades estao TROCADAS, entao um descritor que
+;     atravessa o tile 256 vira DOIS DMAs (e isso acontece de verdade: o
+;     rebuild total emite t0=192/nt=192). Fica no FIM do arquivo (regra da
+;     casa: var nova nao desloca endereco de var existente). ---
+nes_cqa_sn       .word 0   ; tiles do descritor abaixo do tile 256
+nes_cqa_sn2      .word 0   ; tiles do descritor a partir do tile 256
+; --- v3.9: o CMD_CHR_SPLITS ($13) passou a 3 B por entrada,
+;     [scanline, s0, s1]: o par de 4 KB e' POR FAIXA (o Goemon 1 troca o slot
+;     1 no meio do frame).  O s1 da entrada corrente vive aqui -- basta um
+;     escalar porque o nes_cspl_pair e' chamado DENTRO do laco do pre-pass,
+;     logo depois de ler a entrada.  Fim do arquivo (regra da casa). ---
+nes_cs_bnk1      .word 0   ; s1_bank da entrada corrente do $13

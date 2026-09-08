@@ -191,7 +191,8 @@ module nes_wrap(
   // PSRAM traffic -- requests AND ce are gated by core_hold_r below); the
   // renderer writes 1 after the upload and the core boots.  Cleared by SNES
   // reset, so every load/IGR redoes the handshake.  Testbenches tie it 1.
-  input         NESBOX_GO
+  input         NESBOX_GO,
+  input  [7:0]  NESBOX_DBG_REND     // $2BDF, renderer-written debug byte -> NDBG idx25
 );
 
   localparam NES_BREADCRUMB_GROUP = 8'h04;
@@ -267,6 +268,8 @@ module nes_wrap(
   wire        ppu_tap_loopy_w; // $2005/$2006 write toggle (0 = pair complete)
   wire [7:0]  ppu_tap_ppuctrl;
   wire [7:0]  ppu_tap_ppumask;
+  wire [14:0] ppu_tap_loopy_v;      // CPU-side shadow of loopy_V (see nes_split_capture.v)
+  wire        ppu_tap_loopy_v_we;
   wire        tapA_we_w;       // Class A: 1 pulse per memory-bus write (in-core reg)
   wire [21:0] tapA_addr_w;
   wire [7:0]  tapA_data_w;
@@ -283,6 +286,20 @@ module nes_wrap(
   wire [7:0]  chr_snap_win_flags_w;
   wire        chr_snap_win_en_w;
   wire [1:0]  nt_snap_arr_w;   // NT-arrangement snapshot (v2.0a; dynamic mmu tap)
+  // Fase 3: the FOUR per-quadrant CIRAM pages as a 4-bit code (dynamic mmu tap,
+  // registered in MultiMapper).  Declared EXPLICITLY -- an implicit net here
+  // would synthesize as a silent 1-bit GND (Quartus Warning 10236) and every
+  // frame would publish code 0 (= 1A) with nothing to show for it.
+  wire [3:0]  nt_snap_code_w;
+  // The bridge's frame-close ACCEPT pulse.  The four raster capture modules are
+  // reseeded from THIS, not from frame_tick_r: the bridge only latches their
+  // arrays at the accept, which is gated on !nt_we && !chr_we and therefore
+  // deferred whenever a frame close coincides with a CIRAM/CHR-RAM write.
+  // Reseeding on the raw tick threw the entry list away before the bridge read
+  // it -- measured as a whole CMD_CHR_SPLITS8 lost in l3_minelvaton frame 228.
+  // Declared EXPLICITLY (Quartus Warning 10236: an implicit net here would be a
+  // silent 1-bit GND and NOTHING would ever reseed).
+  wire        tick_accept_w;
 
   NES core(
     .clk(CLK),
@@ -320,6 +337,8 @@ module nes_wrap(
     .ppu_tap_loopy_w(ppu_tap_loopy_w),
     .ppu_tap_ppuctrl(ppu_tap_ppuctrl),
     .ppu_tap_ppumask(ppu_tap_ppumask),
+    .ppu_tap_loopy_v(ppu_tap_loopy_v),
+    .ppu_tap_loopy_v_we(ppu_tap_loopy_v_we),
     .tapA_we(tapA_we_w),
     .tapA_addr(tapA_addr_w),
     .tapA_data(tapA_data_w),
@@ -331,7 +350,8 @@ module nes_wrap(
     .chr_snap_win(chr_snap_win_w),
     .chr_snap_win_flags(chr_snap_win_flags_w),
     .chr_snap_win_en(chr_snap_win_en_w),
-    .nt_snap_arr(nt_snap_arr_w)
+    .nt_snap_arr(nt_snap_arr_w),
+    .nt_snap_code(nt_snap_code_w)
   );
 
   // ---------------------------------------------------------------------------
@@ -387,12 +407,36 @@ module nes_wrap(
   assign ROM_BUS_WORD   = 1'b0;      // NES core only ever does 8-bit accesses
   // Free slot for the MCU (main.v arbiter): every cycle we are provably not
   // about to raise RRQ/WRQ -- S_PACE (waiting for credit, memory already done)
-  // and S_SETTLE (dead cycle) qualify, plus an S_IDLE with no request. An MCU
-  // access admitted here can delay OUR next request by up to one arbiter
-  // transaction (~9 CLK2); that fits inside the ~15.65-cycle pacing window in
-  // the typical case and merely stretches the one ce otherwise (safe).
-  assign ROM_FREE_SLOT  = (state == S_PACE) || (state == S_SETTLE) ||
-                          ((state == S_IDLE) && !need_read && !need_write);
+  // and S_SETTLE (dead cycle) qualify.  An MCU access admitted here can delay
+  // OUR next request by up to one arbiter transaction (~9 CLK2); that fits
+  // inside the ~15.65-cycle pacing window in the typical case and merely
+  // stretches the one ce otherwise (safe).
+  //
+  // THE "S_IDLE WITH NO REQUEST" TERM WAS REMOVED, and it is a timing fix with
+  // a behavioural argument, not an optimisation.  It read
+  //     ((state == S_IDLE) && !need_read && !need_write)
+  // and `need_read`/`need_write` are COMBINATIONAL functions of the NES core's
+  // registers, so this line published a core-to-main.v combinational path:
+  //     NES:core|DmaController:dma|spr_state[1] -> need_read -> ROM_FREE_SLOT
+  //     -> main.v `free_slot` -> the ST_IDLE arm -> ST_MEM_DELAYr[*]
+  // which is the WORST setup path of the whole device on the best fitter seeds
+  // (-0.228 ns), and it is single-cycle because the endpoint is in main.v,
+  // outside the {*|NES:core|*} multicycle.
+  //
+  // Dropping the term costs EXACTLY ONE CYCLE of free-slot opportunity per lap
+  // and can never cost more: the FSM leaves S_IDLE unconditionally after one
+  // cycle, and when it leaves with no request pending its next state is
+  // S_PACE -- which is itself a free slot.  So the arbiter now sees the same
+  // window starting one CLK2 later, against a budget that already tolerates a
+  // whole ~9-CLK2 transaction.  A slot is never LOST, only deferred by one.
+  //
+  // Deliberately NOT fixed with `set_multicycle_path -setup 2 ... -to
+  // ST_MEM_DELAYr[*]` (the obvious move, by analogy with rules 2/3 of the SDC):
+  // the ce that launches these core registers is high during S_SETTLE, so they
+  // change on the S_SETTLE->S_IDLE edge, and the FSM's capture-of-consequence
+  // is the END of that same S_IDLE cycle -- launch + 1, not launch + 2.  See
+  // the note in main.sdc.
+  assign ROM_FREE_SLOT  = (state == S_PACE) || (state == S_SETTLE);
 
   always @(posedge CLK) begin
     ce_pulse_r  <= 1'b0;
@@ -773,9 +817,10 @@ module nes_wrap(
   wire [59:0] spl_t_flat;
   wire [11:0] spl_fx_flat;
   nes_split_capture spl_cap(
-    .CLK(CLK), .RST(RST), .ce(ce_pulse_r), .frame_tick(frame_tick_r),
+    .CLK(CLK), .RST(RST), .ce(ce_pulse_r), .frame_tick(tick_accept_w),
     .scanline(scanline_dbg), .loopy_t(ppu_tap_loopy_t), .fine_x(ppu_tap_fine_x),
     .ppumask(ppu_tap_ppumask), .w(ppu_tap_loopy_w),
+    .loopy_v(ppu_tap_loopy_v), .loopy_v_we(ppu_tap_loopy_v_we),
     .spl_cnt_o(spl_cnt), .spl_ovf_o(spl_ovf),
     .spl_sl_flat(spl_sl_flat), .spl_t_flat(spl_t_flat), .spl_fx_flat(spl_fx_flat)
   );
@@ -797,11 +842,12 @@ module nes_wrap(
   wire        cspl_ovf;
   wire        cspl_poison;
   wire [31:0] cspl_sl_flat;
-  wire [31:0] cspl_bank_flat;
+  wire [63:0] cspl_bank_flat;   // v2.9: 4 x {s1, s0}
   nes_chrsplit_capture cspl_cap(
-    .CLK(CLK), .RST(RST), .ce(ce_pulse_r), .frame_tick(frame_tick_r),
+    .CLK(CLK), .RST(RST), .ce(ce_pulse_r), .frame_tick(tick_accept_w),
     .scanline(scanline_dbg),
-    .s0_bank(chr_snap_s0b_w), .s1_present(chr_snap_s1p_w),
+    .s0_bank(chr_snap_s0b_w), .s1_bank(chr_snap_s1b_w),
+    .s1_present(chr_snap_s1p_w),
     .ppumask(ppu_tap_ppumask),
     .cspl_cnt_o(cspl_cnt), .cspl_ovf_o(cspl_ovf), .cspl_poison_o(cspl_poison),
     .cspl_sl_flat(cspl_sl_flat), .cspl_bank_flat(cspl_bank_flat)
@@ -821,12 +867,37 @@ module nes_wrap(
   wire [31:0]  cwin_sl_flat;
   wire [255:0] cwin_win_flat;
   nes_chrwin_capture cwin_cap(
-    .CLK(CLK), .RST(RST), .ce(ce_pulse_r), .frame_tick(frame_tick_r),
+    .CLK(CLK), .RST(RST), .ce(ce_pulse_r), .frame_tick(tick_accept_w),
     .scanline(scanline_dbg),
     .win(chr_snap_win_w),
     .ppumask(ppu_tap_ppumask),
     .cwin_cnt_o(cwin_cnt), .cwin_ovf_o(cwin_ovf),
     .cwin_sl_flat(cwin_sl_flat), .cwin_win_flat(cwin_win_flat)
+  );
+
+  // -------- PPU raster capture (Fase 3, CMD_PPU_SPLITS 0x16) ---------------
+  // The third sibling of spl_cap/cspl_cap/cwin_cap, over the two PPU
+  // quantities the protocol still sampled once per frame at the WORST instant:
+  // the nametable arrangement (FRAME_HDR.flags[5:4], taken at the CLOSE) and
+  // PPUCTRL[4] (CMD_REGS, taken mid-display).  Same K=4 / entry-0 /
+  // <=1-scanline coalescence / shortest-strip eviction rules; no poison and no
+  // w-gating (both sources are single-write/registered -- see the module
+  // header).  The detection mask is {ppuctrl[4], ntcode} and NOT the raw $2000
+  // byte: bits [1:0] of $2000 are rewritten by the scroll code every frame.
+  // Output nets declared EXPLICITLY (Quartus Warning 10236 -- an implicit net
+  // would be a silent 1-bit GND and the command would ship zeros).
+  wire [2:0]  psp_cnt;
+  wire        psp_ovf;
+  wire        psp_frozen;
+  wire [23:0] psp_sl_flat;    // 3 entries (K=3, one below the 0x11/0x13/0x15
+  wire [14:0] psp_pay_flat;   // ceiling) x 5 payload bits -- see the module
+  nes_ppusplit_capture psp_cap(
+    .CLK(CLK), .RST(RST), .ce(ce_pulse_r), .frame_tick(tick_accept_w),
+    .scanline(scanline_dbg),
+    .ntcode(nt_snap_code_w),
+    .ppuctrl(ppu_tap_ppuctrl), .ppumask(ppu_tap_ppumask),
+    .psp_cnt_o(psp_cnt), .psp_ovf_o(psp_ovf), .psp_frozen_o(psp_frozen),
+    .psp_sl_flat(psp_sl_flat), .psp_pay_flat(psp_pay_flat)
   );
 
   reg [15:0] nes_frame_ctr;   // free-running frame number for FRAME_HDR
@@ -837,9 +908,27 @@ module nes_wrap(
 
   wire [15:0] band_bytes_last, band_frames, band_overruns;
   wire [7:0]  pal_sum_w, pal_wcnt_w;   // idx22/23 (NDBG v3 +28/+29)
+  // idx25-27 (Lote 2 instrument) are REGISTERED here before the read mux: the
+  // three sources are debug-only, but nes_frame_ack[*] feeds cb_rp[*] in the
+  // bridge (the path that once cost a whole STA round -- see nes_bridge.v) and
+  // frame_seq_o feeds the tick; adding a 28:1 read mux to their fanout pulled
+  // the fit negative (4/4 seeds) while either change alone closed.  One CLK2
+  // of latency on a byte read over SPI is nothing.
+  reg  [7:0]  dbg_rend_r, dbg_ack_r, dbg_seq_r;
+  always @(posedge CLK) begin
+    dbg_rend_r <= NESBOX_DBG_REND;
+    dbg_ack_r  <= NESBOX_FRAME_ACK[7:0];
+    dbg_seq_r  <= NESBOX_FRAME_SEQ[7:0];
+  end
 
   nes_bridge bridge(
     .clk(CLK), .rst(RST),
+    .tick_accept(tick_accept_w),
+    // joypad reload qualifier: sr1/sr2 may only move on a core tick, so the
+    // SDC's rule 4b (sr* -> core, setup 2) is TRUE.  See the block in
+    // nes_bridge.v -- ctrl_p1_i/ctrl_p2_i are written by the SNES on
+    // SNES_WR_end, an edge with no relation to ce.
+    .ce_tick(ce_pulse_r),
     .nt_we(br_nt_we),  .nt_addr(tapA_addr_w[10:0]), .nt_data(tapA_data_w),
     // v2.4: the CHR tap carries OFFSET + DATA (CMD_CHR_RUN 0x41 is inline now).
     // tapA_addr_w[12:0] is the mapper-resolved BYTE offset inside the <=8 KiB
@@ -884,6 +973,14 @@ module nes_wrap(
     // v2.5 mapper-4 CHR window vector: the per-frame state (CMD_CHR_STATE8, gated
     // by the mmu's own "this mapper publishes windows" bit) plus the K=4 raster
     // entries from cwin_cap (CMD_CHR_SPLITS8, emitted when cnt>=2).
+    // Fase 3 CMD_PPU_SPLITS: K=3 (scanline, {b4,ntcode}) entries from psp_cap,
+    // plus the two inputs the bridge needs to correct entry 0 when the frame
+    // ran its whole display with rendering off (snap_ppuctrl above is the other
+    // half; snap_ntcode is the live mmu tap).
+    .snap_psp_cnt(psp_cnt), .snap_psp_ovf(psp_ovf),
+    .snap_psp_frozen(psp_frozen),
+    .snap_psp_sl(psp_sl_flat), .snap_psp_pay(psp_pay_flat),
+    .snap_ntcode(nt_snap_code_w),
     .snap_chr_win_en(chr_snap_win_en_w), .snap_chr_win(chr_snap_win_w),
     .snap_chr_win_flags(chr_snap_win_flags_w),
     .snap_cwin_cnt(cwin_cnt), .snap_cwin_ovf(cwin_ovf),
@@ -929,6 +1026,14 @@ module nes_wrap(
       // reads status_o live at $2xx7; this mirror is for the USB breadcrumb.
       // TODO 2.4: src/nes.c has to publish index 24 in the NDBG block.
       (reg_read_in == 8'd24) ? NESBOX_STATUS         :  // bridge status (NDBG +30)
+      // Lote 2 instrument (palette stuck on 3 titles): the renderer publishes
+      // ONE byte through $2BDF (today: count of CGRAM DMAs it actually ran in
+      // nes_apply_vblank), and the two low bytes of SEQ/ACK give the consumer
+      // lag without a second read path.  Pure debug: no core state depends on
+      // any of the three.
+      (reg_read_in == 8'd25) ? dbg_rend_r            :  // renderer debug byte (NDBG +31)
+      (reg_read_in == 8'd26) ? dbg_ack_r             :  // consumer ACK lo (NDBG +32)
+      (reg_read_in == 8'd27) ? dbg_seq_r             :  // producer SEQ lo (NDBG +33)
       8'h00;
 
 endmodule

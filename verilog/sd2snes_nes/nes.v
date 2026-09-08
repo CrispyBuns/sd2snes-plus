@@ -168,6 +168,12 @@ module NES(input clk, input reset, input ce,
            output        ppu_tap_loopy_w,   // $2005/$2006 write toggle (0 = pair complete)
            output [7:0]  ppu_tap_ppuctrl,
            output [7:0]  ppu_tap_ppumask,
+           // sd2snes bridge tap: CPU-side shadow of loopy_V + write strobe.
+           // The vertical half of a mid-frame split lives in V, and only a
+           // $2006 pair puts it there -- a $2005 pair moves T alone.  See
+           // nes_split_capture.v's _eff_t note.
+           output [14:0] ppu_tap_loopy_v,
+           output        ppu_tap_loopy_v_we,
 
            // sd2snes video-bridge Class A tap: the memory-bus WRITE, registered
            // IN-CORE.  Same 1:1 event stream as sampling ROM_BUS_WRQ on the
@@ -205,6 +211,13 @@ module NES(input clk, input reset, input ce,
            // mmu.v's MultiMapper -- the DYNAMIC mirror mode as the protocol
            // NTARR code, replacing the static mapper_flags[14] the wrap fed).
            output [1:0]  nt_snap_arr,
+
+           // sd2snes video-bridge NT-CODE snapshot (Fase 3; registered in
+           // mmu.v's MultiMapper).  Bit k = the physical CIRAM page of logical
+           // nametable k -- a SUPERSET of nt_snap_arr, which collapses the four
+           // pages into a 2-bit arrangement enum and cannot name the codes the
+           // eight-1KB-window family reaches (mappers 95/118/154/163).
+           output [3:0]  nt_snap_code,
 
            // sd2snes video-bridge CHR WINDOW VECTOR snapshot (v2.5; registered
            // in mmu.v's MultiMapper).  Mapper 4 / MMC3 only: the eight 1KB
@@ -326,7 +339,8 @@ module NES(input clk, input reset, input ce,
           scanline, cycle, mapper_ppu_flags,
           ppu_tap_pal_we, ppu_tap_pal_idx, ppu_tap_pal_val,
           ppu_tap_oam_we, ppu_tap_oam_addr, ppu_tap_oam_val,
-          ppu_tap_loopy_t, ppu_tap_fine_x, ppu_tap_loopy_w, ppu_tap_ppuctrl, ppu_tap_ppumask);
+          ppu_tap_loopy_t, ppu_tap_fine_x, ppu_tap_loopy_w, ppu_tap_ppuctrl, ppu_tap_ppumask,
+          ppu_tap_loopy_v, ppu_tap_loopy_v_we);
 
   // -- Memory mapping logic
   wire [15:0] prg_addr = addr;
@@ -343,7 +357,8 @@ module NES(input clk, input reset, input ce,
                            prg_addr, prg_linaddr, prg_read, prg_write, prg_din, prg_dout_mapper, from_data_bus, prg_allow,
                            chr_read, chr_addr, chr_linaddr, chr_from_ppu_mapper, has_chr_from_ppu_mapper, chr_allow, vram_a10, vram_ce, mapper_irq,
                            chr_snap_s1_present, chr_snap_s0_bank, chr_snap_s1_bank,
-                           chr_snap_win, chr_snap_win_flags, chr_snap_win_en, nt_snap_arr);
+                           chr_snap_win, chr_snap_win_flags, chr_snap_win_en, nt_snap_arr,
+                           nt_snap_code);
   assign chr_to_ppu = has_chr_from_ppu_mapper ? chr_from_ppu_mapper : memory_din_ppu;
                              
   // Mapper IRQ seems to be delayed by one PPU clock.   
