@@ -87,15 +87,19 @@ module sms_core (
   // keeps running. Geometry regs are snapshotted at START inside sms_translate;
   // rare mid-pass VRAM/CRAM/SAT writes self-heal via the per-set dirty tracking.
   //
-  // AUDIO DEPENDS ON THIS STAYING UNGATED. The PSG hangs off the same CE inside
-  // sms.v and APU_CLK_EDGE below is that same CE, so anything that freezes
-  // sms_ce_gated freezes the PSG counters (pitch drops with the duty cycle of
-  // the gate) AND stalls the dac.v cartridge CIC (its output rate is edge/64).
-  // If a CE gate ever comes back, the PSG has to be moved out of it and fed the
-  // raw CE, and APU_CLK_EDGE with it.
+  // AUDIO DEPENDS ON THIS STAYING UNGATED. The PSG (and now the OPLL) hang
+  // off the same CE inside sms.v and APU_CLK_EDGE below is that same CE, so
+  // anything that freezes sms_ce_gated freezes both chips' counters (pitch
+  // drops with the duty cycle of the gate) AND stalls the dac.v cartridge CIC
+  // (its output rate is edge/64). If a CE gate ever comes back, the PSG and
+  // OPLL both have to be moved out of it and fed the raw CE, and
+  // APU_CLK_EDGE with it.
   wire sms_ce_gated = CE;
   wire [10:0] psg_mix;
   wire        psg_tick;
+  wire signed [11:0] opll_mix;
+  wire        opll_tick;
+  wire        fm_enable;
   sms u_sms (
     .CLK(CLK), .RST(RST), .CE(sms_ce_gated),
     .ROM_RRQ(ROM_RRQ), .ROM_ADDR(ROM_ADDR), .ROM_DATA(ROM_DATA), .ROM_RDY(ROM_RDY),
@@ -110,7 +114,8 @@ module sms_core (
     .DIRTY_HI_MIN(sms_dhi_min), .DIRTY_HI_MAX(sms_dhi_max), .DIRTY_SNAP(tr_start),
     .BACK_SET(BACK_SET), .DIRTY_COLS(sms_dcols), .DBG_FORCE_FULL(DBG_FORCE_FULL),
     .DBG_WAIT(DBG_WAIT),
-    .PSG_MIX(psg_mix), .PSG_TICK(psg_tick)
+    .PSG_MIX(psg_mix), .PSG_TICK(psg_tick),
+    .OPLL_MIX(opll_mix), .OPLL_TICK(opll_tick), .FM_ENABLE(fm_enable)
   );
   assign DBG_FRAME_TICK = frame_tick;
 
@@ -218,11 +223,23 @@ module sms_core (
                                : (au_g < -16'sd512) ? -16'sd512
                                :  au_g;
 
+  // SOURCE SELECT. Real Mark III + FM Unit hardware never sums the two
+  // chips -- enabling FM mutes the PSG in hardware and vice versa (see
+  // opll.v's header) -- so this is a MUX, not an adder, and it costs nothing
+  // extra in the DC-blocker/gain/saturation stages below: whichever source
+  // is live just walks the same pipeline PSG-only used to. OPLL is already
+  // bipolar (no DC to remove), so running it through the DC blocker too is
+  // harmless -- it converges to ~0 offset and passes the signal through.
+  // u_psg keeps running even while muted (nothing gates its CE), so this is
+  // purely which SAMPLE gets captured, not a chip enable.
+  wire               au_tick = fm_enable ? opll_tick : psg_tick;
+  wire signed [11:0] au_src  = fm_enable ? opll_mix   : $signed({1'b0, psg_mix});
+
   always @(posedge CLK) begin
     if (RST) begin
       au_x_r <= 12'sd0; au_avg_r <= 24'sd0; au_ac_r <= 12'sd0; au_out_r <= 10'sd0;
-    end else if (psg_tick) begin
-      au_x_r   <= $signed({1'b0, psg_mix});
+    end else if (au_tick) begin
+      au_x_r   <= au_src;
       au_avg_r <= au_avg_r + $signed({{11{au_ac_w[12]}}, au_ac_w});   // += err >> 12
       // 13 -> 12 bits (unreachable with mix <= 1020, kept as a guard); the
       // bounds are written as bit patterns, not as -12'sd2048, which only

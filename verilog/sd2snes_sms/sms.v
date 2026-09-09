@@ -59,7 +59,14 @@ module sms (
   // audio: unipolar PSG mix (0..1020) + the chip's internal 223.72kHz tick.
   // Amplitude conditioning for the DAC lives in sms_core.v (the wrap), not here.
   output [10:0]     PSG_MIX,
-  output            PSG_TICK
+  output            PSG_TICK,
+  // audio: bipolar OPLL (YM2413 FM unit) mix + its internal ~49.7kHz tick,
+  // plus the $F2 audio-control mute bit so sms_core.v's mixer knows which
+  // chip is actually driving the jack (Mark III + FM Unit behavior: the two
+  // chips are mutually exclusive, never summed -- see opll.v's header).
+  output signed [11:0] OPLL_MIX,
+  output            OPLL_TICK,
+  output            FM_ENABLE
 );
 
   // ---------------- Z80 ----------------
@@ -294,7 +301,8 @@ module sms (
   // I/O read data (combinational; side effects on strobes below)
   reg [7:0] io_data;
   always @* begin
-    case (A[7:6])
+    if (A[7:0] == 8'hF2) io_data = f2_data;               // audio control readback
+    else case (A[7:6])
       2'b01: io_data = vcounter;
       2'b10: io_data = A[0] ? {vblank_flag, 7'h00} : vdp_readbuf;
       2'b11: io_data = A[0] ? 8'hFF : PAD1;
@@ -329,6 +337,47 @@ module sms (
     .WE(psg_we), .D(dout),
     .MIX(PSG_MIX), .TICK(PSG_TICK)
   );
+
+  // ---------------- OPLL (YM2413 FM unit) ----------------
+  // $F0-$F2 are exact-address decodes (unlike the PSG's whole-quadrant
+  // $40-$7F), so they need A[7:0] itself, not the coarse A[7:6] switch the
+  // rest of this file uses -- $F0-$F2 sit inside the same $C0-$FF quadrant
+  // as the controller ports, and must win over that quadrant's default.
+  wire opll_we_addr = wr_edge & ~iorq_n & (A[7:0] == 8'hF0);  // register select
+  wire opll_we_data  = wr_edge & ~iorq_n & (A[7:0] == 8'hF1); // register data
+  wire f2_we         = wr_edge & ~iorq_n & (A[7:0] == 8'hF2); // audio control
+  // (no f2_rd needed: reading $F2 has no side effect on real hardware --
+  // the counter free-runs and the mute bits are read combinationally below)
+
+  opll u_opll (
+    .CLK(CLK), .RST(RST), .CE(CE),
+    .WE_ADDR(opll_we_addr), .WE_DATA(opll_we_data), .D(dout),
+    .MIX(OPLL_MIX), .TICK(OPLL_TICK)
+  );
+
+  // Audio control port ($F2). Modeled on "Mark III + FM Unit" hardware (see
+  // opll.v's header + smspower.org/Development/AudioControlPort): only bit0
+  // (YM2413 enable) is real; bit1 (SN76489 enable) is a Japan-SMS-only
+  // feature this core doesn't claim to be, so it reads back forced to 0,
+  // same as real Mark III + FM Unit boards -- that's also exactly what the
+  // standard FM-detection routine (smspower.org/Development/FMChipDetection)
+  // writes and checks for, so detection passes without a Japan-BIOS-only
+  // special case. Bits 7:5 mirror three bits of a free-running counter (on
+  // real hardware, one clocked by C-Sync); no known game's detection loop
+  // depends on its exact rate, so it's a plain divider off CE rather than a
+  // true C-Sync tap. Bits 4:2 are always 0 per the same page.
+  reg       fm_ctl0;         // last-written bit0 = YM2413 enable
+  reg [2:0] f2_counter;
+  always @(posedge CLK) begin
+    if (RST) begin
+      fm_ctl0 <= 1'b0; f2_counter <= 3'd0;
+    end else begin
+      if (f2_we) fm_ctl0 <= dout[0];
+      if (CE)    f2_counter <= f2_counter + 3'd1;   // free-running, ~56kHz/8
+    end
+  end
+  assign FM_ENABLE = fm_ctl0;
+  wire [7:0] f2_data = {f2_counter, 4'b0000, fm_ctl0};
 
   // ---------------- VDP/WRAM writes, mapper, VDP read side effects ----------------
   always @(posedge CLK) begin
