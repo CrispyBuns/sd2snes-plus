@@ -266,6 +266,7 @@ TRANSLATIONS = {
     'text_on_p2': 'Sí: P2',
     'text_on': 'Sí',
     'text_off': 'No',
+    'text_15_max': '15 (máx)',
     'text_theme': 'Tema',
     'text_cover_large': 'Grande',
     'text_cover_small': 'Pequeño',
@@ -312,6 +313,12 @@ TRANSLATIONS = {
     'text_cheat': 'Cheats para ',
     'text_cheat_noname': '(sin nombre)',
     'text_igm_cheat_noname': '(sin nombre)',
+    'text_igm_ch_none': 'Sin cheats',
+    'text_igm_ft_tab': '<>:PESTANA L/R:EXTREMOS A:ABRIR B:CERRAR',
+    'text_igm_ft_cheats': '<>:PAGINA L/R:INICIO/FIN A:SI/NO X:CHEATS B:ATRAS',
+    'text_igm_ft_generic': 'A:SELECCIONAR B:ATRAS',
+    'text_igm_master_on': 'CHEATS: SI',
+    'text_igm_master_off': 'CHEATS: NO',
     # System Information screen. {N} = a value the menu substitutes (see si_fmt_tbl);
     # {34} is a quote and {127}{128} the ellipsis. Every placeholder of the English
     # base must appear here exactly as often -- build_const.py fails the build otherwise.

@@ -727,6 +727,12 @@ text_cheat      .byt "Cheats for ", 0
 ; EMPTY now, so both cheat UIs substitute this: the menu list draws text_cheat_noname
 ; directly, and the in-game list (a separate $C2 link that cannot reach this pool)
 ; gets text_igm_cheat_noname staged into OVL_NONAME_BUF by whichever host opened it.
+text_igm_ch_none      .byt "No cheats", 0
+text_igm_ft_tab       .byt "<>:TAB L/R:ENDS A:OPEN B:CLOSE", 0
+text_igm_ft_cheats    .byt "<>:PAGE L/R:TOP/END A:ON/OFF X:CHEATS B:BACK", 0
+text_igm_ft_generic   .byt "A:SELECT B:BACK", 0
+text_igm_master_on    .byt "CHEATS: ON", 0
+text_igm_master_off   .byt "CHEATS: OFF", 0
 text_cheat_noname .byt "(no name)", 0
 text_igm_cheat_noname .byt "(no name)", 0
 text_ips_header .byt "Patches", 0

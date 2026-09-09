@@ -140,16 +140,35 @@ MANUAL_LABELS = [
     "text_igm_mn_slug_other",   # 13 slug 5 -> Other
 ]
 
-# The CHEATS tab strings, IN INDEX ORDER. Unlike the other tabs there is no index enum
-# in snes/igmenu.a65: igm_fill_noname indexes line 0 directly (igm_cheats_tbl[lang]), so
-# a second entry here would need that routine to take a line index first.
+# The CHEATS tab strings, IN INDEX ORDER. Lockstep with the IGM_CH_* indices in
+# snes/igmenu.a65. Line 0 stays first because igm_fill_noname indexes it directly as
+# igm_cheats_tbl[lang] (line 0 is at offset 0 whatever comes after), while line 1 is
+# read through ch_copy/ch_strlen, which do take a line index.
 CHEATS_LABELS = [
     "text_igm_cheat_noname",  # 0 placeholder for a cheat whose YAML carries no name
+    "text_igm_ch_none",       # 1 centered message when the ROM has no cheats at all
 ]
 
 # The placeholder is copied into OVL_NONAME_BUF (32 B, see memmap.i65) and drawn in the
-# list's name column; cap it well inside both.
-CHEATS_LABEL_MAX = {"text_igm_cheat_noname": 24}
+# list's name column; cap it well inside both. The empty-list message is centered on a
+# 64-column row by ch_draw_centered, so it only needs to stay well short of that.
+CHEATS_LABEL_MAX = {"text_igm_cheat_noname": 24, "text_igm_ch_none": 40}
+
+# Shell chrome shared by every tab, IN INDEX ORDER. Lockstep with the IGM_SH_* indices
+# in snes/igmenu.a65. These were hard-coded ASCII in igmenu.a65 until the Russian
+# translation landed: a Cyrillic menu with a Latin footer reads as broken, so the
+# "Cheats stays English" convention gets an explicit exception for the in-game chrome.
+SHELL_LABELS = [
+    "text_igm_ft_tab",        # 0 footer, tab-bar focus
+    "text_igm_ft_cheats",     # 1 footer, CHEATS content focus
+    "text_igm_ft_generic",    # 2 footer, any other content focus
+    "text_igm_master_on",     # 3 master cheat switch, enabled
+    "text_igm_master_off",    # 4 master cheat switch, disabled
+]
+
+# All five are centered on a 64-column row by sh_draw_centered, so the only real
+# limit is the row itself; keep a margin so a long translation cannot touch the edges.
+SHELL_LABEL_MAX = {lbl: 56 for lbl in SHELL_LABELS}
 
 # The TRAINER tab strings, IN INDEX ORDER. Lockstep with the IGM_TR_* indices in
 # snes/trainer.i65 (SAME count + order) and with the EN base labels in const.a65.
@@ -226,6 +245,8 @@ def cap_for(label):
         return SAVES_LABEL_MAX[label]
     if label in CHEATS_LABEL_MAX:
         return CHEATS_LABEL_MAX[label]
+    if label in SHELL_LABEL_MAX:
+        return SHELL_LABEL_MAX[label]
     if label in TRAINER_LABEL_MAX:
         return TRAINER_LABEL_MAX[label]
     if label in TRAINER_LABELS:
@@ -366,6 +387,7 @@ def main():
     out += emit_table("igm_tab_tbl", "igm_tb", TAB_LABELS)
     out += emit_table("igm_manual_tbl", "igm_mn", MANUAL_LABELS)
     out += emit_table("igm_cheats_tbl", "igm_ch", CHEATS_LABELS)
+    out += emit_table("igm_shell_tbl", "igm_sh", SHELL_LABELS)
     out += emit_table("igm_trainer_tbl", "igm_tr", TRAINER_LABELS)
 
     out_path.write_text("\n".join(out) + "\n")

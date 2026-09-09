@@ -309,20 +309,14 @@ igmenu_header:
 #define TABBAR_SLOT     12         ; sep(1) + field(10) + sep(1); bases 2/14/26/38/50
 ; Footer is PER FOCUS LEVEL x tab (igmenu_draw_footer reads igmenu_flags bit1): at the tab-bar
 ; level a universal tab-nav line; at the content level a per-tab line (Cheats advertises X /
-; ON-OFF, the others a generic SELECT / BACK). All three live in ig_footer_str, concatenated in
-; this order (tab-bar, Cheats-content, generic-content); the draw picks (offset, len, col).
-#define IG_FT_TAB_COL   17         ; tab-bar footer start column ((64-30)/2)
-#define IG_FT_TAB_LEN   30
-#define IG_FT_CHT_COL   10         ; Cheats content footer start column ((64-44)/2)
-#define IG_FT_CHT_LEN   44
-#define IG_FT_GEN_COL   24         ; generic content footer start column ((64-15)/2)
-#define IG_FT_GEN_LEN   15
+; ON-OFF, the others a generic SELECT / BACK). The three lines are LOCALIZED (IGM_SH_FT_* in
+; igm_shell_tbl) and centered at draw time, so there is no start column or length to keep in
+; sync with the text any more.
+#define IG_FOOTER_ROW   25         ; absolute tile row of the footer
 
-; Master cheat switch status line (CHEATS tab only): row 2, between the tab bar (row 1)
-; and the list body (rows 4..23). 11 chars: "CHEATS: ON " / "CHEATS: OFF".
+; Master cheat switch status line (CHEATS tab only): between the tab bar (row 1) and the
+; list body (rows 4..23). LOCALIZED (IGM_SH_MASTER_ON/OFF) and centered at draw time.
 #define IG_MASTER_ROW   3          ; row 2 belongs to the tab boxes' bottom border now
-#define IG_MASTER_COL   26         ; (64-11)/2
-#define IG_MASTER_LEN   11
 
 ; ======================================================================
 ;  Entry. Runs in forced blank (the $C0 hook fires BEFORE its unblank).
@@ -905,6 +899,192 @@ ce_done:
 	plp
 	rts
 
+; ---- CHEATS tab i18n string indices -- lockstep with CHEATS_LABELS order in
+;      gen_igmenu_lang.py. Line 0 is ALSO read directly by igm_fill_noname (it is at
+;      offset 0 of the table whatever follows it), line 1 goes through ch_copy. ----
+#define IGM_CH_NONAME   0
+#define IGM_CH_NONE     1
+
+; ---- "no cheats" message, centered on row 13. LOCALIZED: the text comes out of
+;      igm_cheats_tbl (bank $C8) like every other tab's.
+;      It used to be nine hard-coded ASCII stores in cheatlist.i65 -- that file is
+;      shared source that also assembles into the $C1 overlay host, which cannot reach
+;      a $C8 table, so the string could not be localized while the single-tab fail-safe
+;      existed. With the fail-safe gone the shell is the only host that draws it.
+;      Shape mirrors sst_draw_centered; reuses the STATES transients (sst_lang/sst_tmp)
+;      the same way saves_enter does -- the tabs never run at the same time. ----
+ss_ovl_draw_empty:
+	php
+	phb
+	sep #$20 : .as
+	lda #$f4 : pha : plb                       ; DBR=$F4 (OVL_RB abs writes)
+	lda @CFG_LANGUAGE                          ; $FF01B7
+	cmp #IGM_LANG_COUNT
+	bcc cde_lang_ok
+	lda #$00                                   ; out of range -> English (column 0)
+cde_lang_ok:
+	rep #$30 : .al : .xl
+	and #$00ff
+	sta @sst_lang
+	lda #IGM_CH_NONE
+	jsr ch_strlen                              ; A = encoded length
+	sta @sst_tmp
+	lda #$0040
+	sec : sbc @sst_tmp                         ; 64 - len
+	lsr                                        ; / 2
+	tay                                        ; Y = start column
+	jsr ovl_row_clear                          ; preserves Y
+	lda #IGM_CH_NONE
+	jsr ch_copy                                ; copy string at Y
+	ldx #$000d                                 ; absolute tile row 13
+	jsr ovl_flush_abs
+	plb
+	plp
+	rts
+
+; ---- Shell-chrome i18n string indices -- lockstep with SHELL_LABELS in
+;      gen_igmenu_lang.py. ----
+#define IGM_SH_FT_TAB     0
+#define IGM_SH_FT_CHEATS  1
+#define IGM_SH_FT_GENERIC 2
+#define IGM_SH_MASTER_ON  3
+#define IGM_SH_MASTER_OFF 4
+
+; ---- draw shell-chrome string A(16)=line index centered on absolute row X(16).
+;      Sets sst_lang itself, so it works from any tab. DBR is set here. ----
+sh_draw_centered:
+	php
+	rep #$30 : .al : .xl
+	sta @sst_tmp                               ; line index -- SAVE A FIRST: setting DBR
+	txa                                        ;   below goes through A and would eat it
+	sta @sst_row                               ; absolute row (X on entry)
+	phb
+	sep #$20 : .as
+	lda #$f4 : pha : plb                       ; DBR=$F4 (OVL_RB abs writes)
+	lda @CFG_LANGUAGE
+	cmp #IGM_LANG_COUNT
+	bcc shd_lang_ok
+	lda #$00
+shd_lang_ok:
+	rep #$30 : .al : .xl
+	and #$00ff
+	sta @sst_lang
+	lda @sst_tmp
+	jsr sh_strlen                              ; A = encoded length
+	sta @sst_scr_coff
+	lda #$0040
+	sec : sbc @sst_scr_coff                    ; 64 - len
+	lsr                                        ; / 2
+	tay                                        ; Y = start column
+	jsr ovl_row_clear                          ; preserves Y
+	lda @sst_tmp
+	jsr sh_copy
+	lda @sst_row
+	tax
+	jsr ovl_flush_abs
+	plb
+	plp
+	rts
+
+; ---- copy/measure a shell-chrome string (same shape as ch_copy/ch_strlen, on
+;      igm_shell_tbl). A(16)=line index; sh_copy takes Y(16)=dest column, DBR=$F4. ----
+sh_copy:
+	php
+	rep #$30 : .al : .xl
+	asl : asl : asl
+	clc : adc @sst_lang
+	asl
+	tax
+	lda @igm_shell_tbl, x
+	tax
+	sep #$20 : .as
+sh_copy_l:
+	lda @$c80000, x
+	beq sh_copy_d
+	sta OVL_RB, y
+	inx
+	iny
+	cpy #IG_HELP_MAXCOL
+	bne sh_copy_l
+sh_copy_d:
+	rep #$30 : .al : .xl
+	plp
+	rts
+
+sh_strlen:
+	php
+	rep #$30 : .al : .xl
+	asl : asl : asl
+	clc : adc @sst_lang
+	asl
+	tax
+	lda @igm_shell_tbl, x
+	tax
+	ldy #$0000
+	sep #$20 : .as
+sh_sl_l:
+	lda @$c80000, x
+	beq sh_sl_d
+	inx
+	iny
+	cpy #IG_HELP_MAXCOL
+	bne sh_sl_l
+sh_sl_d:
+	rep #$30 : .al : .xl
+	tya
+	plp
+	rts
+
+; ---- copy a NUL-terminated font-encoded CHEATS string into OVL_RB. A(16)=line index,
+;      Y(16)=dest column; DBR=$F4. Bounded by IG_HELP_MAXCOL. Uses sst_lang. ----
+ch_copy:
+	php
+	rep #$30 : .al : .xl
+	asl : asl : asl                            ; index*8 (IGM_LANG_STRIDE, see he_copy)
+	clc : adc @sst_lang                        ; + lang column
+	asl                                        ; *2 (word index)
+	tax
+	lda @igm_cheats_tbl, x                     ; A = source byte offset within bank $C8
+	tax
+	sep #$20 : .as
+ch_copy_l:
+	lda @$c80000, x                            ; long,X source byte (bank $C8)
+	beq ch_copy_d
+	sta OVL_RB, y                              ; abs,Y (DBR=$F4)
+	inx
+	iny
+	cpy #IG_HELP_MAXCOL
+	bne ch_copy_l
+ch_copy_d:
+	rep #$30 : .al : .xl
+	plp
+	rts
+
+; ---- encoded length of a CHEATS string. A(16)=line index -> A(16)=length. Uses sst_lang. ----
+ch_strlen:
+	php
+	rep #$30 : .al : .xl
+	asl : asl : asl
+	clc : adc @sst_lang
+	asl
+	tax
+	lda @igm_cheats_tbl, x
+	tax
+	ldy #$0000
+	sep #$20 : .as
+ch_sl_l:
+	lda @$c80000, x
+	beq ch_sl_d
+	inx
+	iny
+	cpy #IG_HELP_MAXCOL
+	bne ch_sl_l
+ch_sl_d:
+	rep #$30 : .al : .xl
+	tya
+	plp
+	rts
+
 cheats_input:
 	php
 	; A ($0080) -> toggle
@@ -997,32 +1177,22 @@ igm_ms_send:
 ;      ever shows where X actually does something. One full row = one flush, which fits
 ;      the vblank budget (the list redraw batches TWO rows per frame). ----
 ig_master_draw:
+	; Localized (igm_shell_tbl): pick ON/OFF and let sh_draw_centered center it. The
+	; old version copied a fixed-width run out of ig_master_str at a fixed column.
 	php
-	phb
-	sep #$20 : .as
-	lda #$f4 : pha : plb                      ; DBR=$F4 (OVL_RB abs writes)
 	rep #$30 : .al : .xl
-	jsr ovl_row_clear
+	sep #$20 : .as
 	lda @CHEAT_MASTER
-	and #$00ff                                ; byte value (the next BSRAM byte is not ours)
-	beq igm_md_off
-	ldx #$0000                                ; "CHEATS: ON "
-	bra igm_md_copy
-igm_md_off:
-	ldx #IG_MASTER_LEN                        ; "CHEATS: OFF"
-igm_md_copy:
-	ldy #IG_MASTER_COL
-	sep #$20 : .as
-igm_md_l:
-	lda @ig_master_str, x
-	sta OVL_RB, y
-	inx : iny
-	cpy #(IG_MASTER_COL+IG_MASTER_LEN)
-	bne igm_md_l
 	rep #$30 : .al : .xl
+	and #$00ff
+	beq igm_md_off
+	lda #IGM_SH_MASTER_ON
+	bra igm_md_go
+igm_md_off:
+	lda #IGM_SH_MASTER_OFF
+igm_md_go:
 	ldx #IG_MASTER_ROW
-	jsr ovl_flush_abs
-	plb
+	jsr sh_draw_centered
 	plp
 	rts
 
@@ -2873,49 +3043,28 @@ igt_sc_go:
 ;  Footer (row 25): the new bindings. Copied from a $C8 string via long,X. Forced blank.
 ; ======================================================================
 igmenu_draw_footer:
+	; The three footers are localized now (igm_shell_tbl), so this only PICKS the line
+	; and lets sh_draw_centered measure and center it. It used to copy a fixed run out
+	; of ig_footer_str with a hard-coded start column and length per string -- which is
+	; exactly what stopped it being translatable.
 	php
-	phb
-	sep #$20 : .as
-	lda #$f4 : pha : plb                      ; DBR=$F4
 	rep #$30 : .al : .xl
-	jsr ovl_row_clear
-	; pick the footer by focus level (igmenu_flags bit1) then tab. ovl_idx counts the chars
-	; left (the three strings differ in length AND start column).
 	lda @igmenu_flags
 	bit #$0002
 	bne ig_ft_content                         ; content focus -> per-tab content line
-	ldx #$0000                                ; tab-bar line (offset 0)
-	ldy #IG_FT_TAB_COL
-	lda #IG_FT_TAB_LEN
+	lda #IGM_SH_FT_TAB
 	bra ig_ft_go
 ig_ft_content:
 	lda @active_tab
+	and #$00ff
 	bne ig_ft_generic
-	ldx #IG_FT_TAB_LEN                        ; Cheats content line (right after the tab-bar one)
-	ldy #IG_FT_CHT_COL
-	lda #IG_FT_CHT_LEN
+	lda #IGM_SH_FT_CHEATS
 	bra ig_ft_go
 ig_ft_generic:
-	ldx #(IG_FT_TAB_LEN+IG_FT_CHT_LEN)        ; generic content line (last)
-	ldy #IG_FT_GEN_COL
-	lda #IG_FT_GEN_LEN
+	lda #IGM_SH_FT_GENERIC
 ig_ft_go:
-	sta @ovl_idx                              ; remaining characters
-	sep #$20 : .as
-ig_ft_loop:
-	lda @ig_footer_str, x
-	sta OVL_RB, y
-	inx : iny
-	rep #$20 : .al
-	lda @ovl_idx : dec : sta @ovl_idx
-	beq ig_ft_done
-	sep #$20 : .as
-	bra ig_ft_loop
-ig_ft_done:
-	rep #$30 : .al : .xl
-	ldx #$0019                                ; absolute tile row 25
-	jsr ovl_flush_abs
-	plb
+	ldx #IG_FOOTER_ROW
+	jsr sh_draw_centered
 	plp
 	rts
 
@@ -3790,17 +3939,6 @@ tab_focus_tbl:
 	.word ig_focus_setbit1                   ; 4 TRAINER
 	.word ig_focus_setbit1                   ; 5 HELP
 
-ig_footer_str:
-	.byt "<>:TAB L/R:ENDS A:OPEN B:CLOSE"                    ; IG_FT_TAB_LEN = 30 (tab-bar level)
-	.byt "<>:PAGE L/R:TOP/END A:ON/OFF X:CHEATS B:BACK"      ; IG_FT_CHT_LEN = 44 (Cheats content)
-	.byt "A:SELECT B:BACK"                                   ; IG_FT_GEN_LEN = 15 (generic content)
-
-; Master cheat switch status line, two fixed-width (IG_MASTER_LEN) variants: ON first,
-; OFF second -- ig_master_draw indexes with 0 / IG_MASTER_LEN.
-ig_master_str:
-	.byt "CHEATS: ON "
-	.byt "CHEATS: OFF"
-
 ; Tab icons: 6 x 8x8 1bpp (bit set = ink). Order = tab order (Cheats/Savestates/Saves/Guides/Trainer/Help).
 ; Uploaded to OBJ tiles 0..4 by ig_obj_load; ig_obj_tabbar draws ONE sprite (tile = active_tab)
 ; at a fixed X/Y -- and ig_obj_load leaves OBJ off the main screen, so nothing renders today
@@ -3829,12 +3967,23 @@ igm_help_cols:
 ; Per-tab frame geometry (x, y, w, h in tile cells), record = (active_tab-1)*4. Sized to each
 ; tab's content instead of the old full-body frame. INVARIANT: x ODD and x+w-1 EVEN (left
 ; border cell lands on BG1, right on BG2 -- ig_draw_window's side writes assume it).
+; WIDTH IS SET BY THE LONGEST TRANSLATED LINE, not by the widest label column. Every
+; centered line (sst_draw_centered and friends) is centered on the 64-column ROW, not on
+; the frame, so a line longer than the frame's interior has its head written UNDER the
+; left border -- and the border is drawn AFTER the body, so the first characters simply
+; vanish. The worst line today is the SAVES autosave hint at 47 encoded chars (pt/es/fr),
+; which occupies columns 8..54; x=5/w=54 gives an interior of 6..57 and keeps the frame
+; centered where it was, so the absolute-column content inside stays put.
+; PARITY IS NOT OPTIONAL: mode-5 splits the row between BG1 (odd logical columns) and BG2
+; (even), and ig_draw_window's side writes assume the LEFT border sits on an odd column and
+; the RIGHT one on an even column. x must stay ODD and w EVEN, or the verticals land on the
+; wrong plane and the corners stop meeting the horizontals (seen on hardware with x=6/w=52).
 ig_frame_geom:
-	.byt 13, 4, 38, 18     ; 1 SAVESTATES: title r6, slots r9-15, hint r19 -> rows 4..21, cols 13..50
-	.byt 13, 4, 38, 18     ; 2 SAVES: the slot selector (EnableSramSlots is retired/always-on;
+	.byt  5, 4, 54, 18     ; 1 SAVESTATES: title r6, slots r9-15, hint r19 -> rows 4..21, cols 5..58
+	.byt  5, 4, 54, 18     ; 2 SAVES: the slot selector (EnableSramSlots is retired/always-on;
 	                       ;   the wide status-only view is dead code) -- same box as SAVESTATES
-	.byt 13, 4, 40, 18     ; 3 GUIDES: list r5-14 / prompt r6..19 (keys r18/19) -> cols 13..52
-	.byt 13, 4, 38, 18     ; 4 TRAINER: title r6, fields r8+, actions, hint r20 -> cols 13..50
+	.byt  5, 4, 54, 18     ; 3 GUIDES: list r5-14 / prompt r6..19 (keys r18/19)
+	.byt  5, 4, 54, 18     ; 4 TRAINER: title r6, fields r8+, actions, hint r20
 	.byt  1, 3, 62, 22     ; 5 HELP (kept for the future options screen; the old full body)
 
 ig_thm_math_def:
