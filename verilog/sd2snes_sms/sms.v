@@ -59,7 +59,14 @@ module sms (
   // audio: unipolar PSG mix (0..1020) + the chip's internal 223.72kHz tick.
   // Amplitude conditioning for the DAC lives in sms_core.v (the wrap), not here.
   output [10:0]     PSG_MIX,
-  output            PSG_TICK
+  output            PSG_TICK,
+  // audio: FM Sound Unit (YM2413/OPLL) — signed sample, own tick rate.
+  // FM_ENABLE reflects the audio-control ($F2 bit0) mute state: on real
+  // Mark III hardware enabling FM silences the PSG and vice versa, so
+  // sms_core.v should mux (not sum) between PSG_MIX and FM_MIX using this.
+  output signed [14:0] FM_MIX,
+  output                FM_TICK,
+  output                FM_ENABLE
 );
 
   // ---------------- Z80 ----------------
@@ -294,7 +301,9 @@ module sms (
   // I/O read data (combinational; side effects on strobes below)
   reg [7:0] io_data;
   always @* begin
-    case (A[7:6])
+    if (A[7:0] == 8'hF2)
+      io_data = fm_ctrl_rdval;   // FM Sound Unit audio-control readback
+    else case (A[7:6])
       2'b01: io_data = vcounter;
       2'b10: io_data = A[0] ? {vblank_flag, 7'h00} : vdp_readbuf;
       2'b11: io_data = A[0] ? 8'hFF : PAD1;
@@ -328,6 +337,44 @@ module sms (
     .CLK(CLK), .RST(RST), .CE(CE),
     .WE(psg_we), .D(dout),
     .MIX(PSG_MIX), .TICK(PSG_TICK)
+  );
+
+  // ---------------- FM Sound Unit (YM2413/OPLL, Mark III add-on) ----------
+  // Ports per smspower.org/Development/YM2413: $F0=address latch (write),
+  // $F1=data (write). Audio-control ($F2) is documented separately at
+  // smspower.org/Development/AudioControlPort.
+  wire fm_addr_we = wr_edge & ~iorq_n & (A[7:0] == 8'hF0);
+  wire fm_data_we = wr_edge & ~iorq_n & (A[7:0] == 8'hF1);
+  wire fm_ctrl_we = wr_edge & ~iorq_n & (A[7:0] == 8'hF2);
+
+  // Audio-control register. Per the doc: on the Mark III, bit1 of whatever
+  // is written is forced to 0 before it's stored (there's no independent
+  // PSG-mute control — enabling FM disables PSG output and vice versa, so
+  // writing $02/$03 behaves the same as $00/$01). Readback: bits7:5 = a
+  // free-running counter (not tied to anything real games check — the
+  // detection routine only masks bits 0-2), bits4:3 = 0, bits1:0 = the
+  // stored value. Bit0 = 1 means FM enabled.
+  reg fm_ctrl_bit0;
+  always @(posedge CLK) begin
+    if (RST) fm_ctrl_bit0 <= 1'b0;
+    else if (fm_ctrl_we) fm_ctrl_bit0 <= dout[0]; // dout[1] forced 0 by not storing it
+  end
+  assign FM_ENABLE = fm_ctrl_bit0;
+
+  reg [11:0] fm_ctrl_counter; // free-running; only used for $F2 bits 7:5
+  always @(posedge CLK) begin
+    if (RST) fm_ctrl_counter <= 12'd0;
+    else if (CE) fm_ctrl_counter <= fm_ctrl_counter + 12'd1;
+  end
+  wire [7:0] fm_ctrl_rdval = {fm_ctrl_counter[11], fm_ctrl_counter[7], fm_ctrl_counter[3],
+                              4'b0000, fm_ctrl_bit0};
+  // bits4:1 always read 0 (bit2 per spec is always 0; bits4,3,1 have no
+  // function on the Mark III since only bit0/FM-enable is stored — see above)
+
+  opll u_opll (
+    .CLK(CLK), .RST(RST), .CE(CE),
+    .ADDR_WE(fm_addr_we), .DATA_WE(fm_data_we), .D(dout),
+    .MIX(FM_MIX), .TICK(FM_TICK)
   );
 
   // ---------------- VDP/WRAM writes, mapper, VDP read side effects ----------------

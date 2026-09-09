@@ -96,6 +96,9 @@ module sms_core (
   wire sms_ce_gated = CE;
   wire [10:0] psg_mix;
   wire        psg_tick;
+  wire signed [14:0] fm_mix;
+  wire                fm_tick;
+  wire                fm_enable;
   sms u_sms (
     .CLK(CLK), .RST(RST), .CE(sms_ce_gated),
     .ROM_RRQ(ROM_RRQ), .ROM_ADDR(ROM_ADDR), .ROM_DATA(ROM_DATA), .ROM_RDY(ROM_RDY),
@@ -110,7 +113,8 @@ module sms_core (
     .DIRTY_HI_MIN(sms_dhi_min), .DIRTY_HI_MAX(sms_dhi_max), .DIRTY_SNAP(tr_start),
     .BACK_SET(BACK_SET), .DIRTY_COLS(sms_dcols), .DBG_FORCE_FULL(DBG_FORCE_FULL),
     .DBG_WAIT(DBG_WAIT),
-    .PSG_MIX(psg_mix), .PSG_TICK(psg_tick)
+    .PSG_MIX(psg_mix), .PSG_TICK(psg_tick),
+    .FM_MIX(fm_mix), .FM_TICK(fm_tick), .FM_ENABLE(fm_enable)
   );
   assign DBG_FRAME_TICK = frame_tick;
 
@@ -205,7 +209,7 @@ module sms_core (
   reg  signed [11:0] au_x_r;        // raw capture (mix is unsigned -> sign bit 0)
   reg  signed [23:0] au_avg_r;      // DC estimate, 12.12 fixed point
   reg  signed [11:0] au_ac_r;       // DC-blocked sample
-  reg  signed [9:0]  au_out_r;      // gained + saturated 10-bit output
+  reg  signed [9:0]  au_out_r;      // gained + saturated 10-bit output (PSG path)
   wire signed [11:0] au_avg_hi = au_avg_r[23:SMS_DCB_SHIFT];
   wire signed [12:0] au_ac_w   = au_x_r - au_avg_hi;
   wire signed [15:0] au_g      = $signed({{4{au_ac_r[11]}}, au_ac_r}) <<< SMS_GAIN_SHIFT;
@@ -232,6 +236,37 @@ module sms_core (
       au_out_r <= au_sat[9:0];
     end
   end
+
+  // ---------------------------------------------------------------------------
+  // FM (OPLL) PATH. Unlike the PSG, opll.v's MIX is already a signed, roughly
+  // zero-centered sum of up to 9 bipolar sine-derived samples -- no DC blocker
+  // needed, just gain + saturate down to the same signed 10-bit scale. Real
+  // Mark III hardware is mutually exclusive (FM_ENABLE off -> PSG plays, on ->
+  // FM plays, never both) per smspower.org/Development/AudioControlPort, so
+  // this is a MUX at the final stage, not a sum.
+  //
+  // FM_GAIN_SHIFT is a first guess, NOT load-bearing like SMS_GAIN_SHIFT above
+  // (it hasn't been checked against real headroom the way the PSG one was) --
+  // expect to retune this by ear once FM is on real hardware. opll.v's MIX
+  // can reach roughly +/-9200 at nine fully-open channels (9 x ~1021), so
+  // shift-right by 4 (/16) before saturating puts a full 9-channel unison at
+  // the rail and a typical 3-4 voice passage comfortably under it -- same
+  // reasoning as the PSG headroom note above, just for FM's wider raw range.
+  // ---------------------------------------------------------------------------
+  localparam FM_GAIN_SHIFT = 4;
+
+  reg  signed [9:0] au_fm_out_r;
+  wire signed [14:0] fm_shifted = fm_mix >>> FM_GAIN_SHIFT;
+  wire signed [14:0] fm_sat = (fm_shifted >  15'sd511) ?  15'sd511
+                            : (fm_shifted < -15'sd512) ? -15'sd512
+                            :  fm_shifted;
+
+  always @(posedge CLK) begin
+    if (RST) au_fm_out_r <= 10'sd0;
+    else if (fm_tick) au_fm_out_r <= fm_sat[9:0];
+  end
+
+  wire signed [9:0] au_final_r = fm_enable ? au_fm_out_r : au_out_r;
 
   assign APU_CLK_EDGE = CE;
 
@@ -267,9 +302,9 @@ module sms_core (
       else                          probe_ctr <= probe_ctr + 19'd1;
     end
   end
-  assign APU_DAT = probe_on ? {probe_sample, probe_sample} : {au_out_r, au_out_r};
+  assign APU_DAT = probe_on ? {probe_sample, probe_sample} : {au_final_r, au_final_r};
 `else
-  assign APU_DAT = {au_out_r, au_out_r};
+  assign APU_DAT = {au_final_r, au_final_r};
 `endif
 
 endmodule
