@@ -60,6 +60,26 @@
 ss_overlay:
 	sep #$20 : .as : rep #$10 : .xl
 
+	; ---- The $C8 tab shell is the ONLY renderer now, so check it FIRST and bail out
+	;      before touching anything if it is not there. Two guards: the MCU-armed
+	;      IGMENU_GATE (it staged and verified igmenu.bin this game-load) and a re-check
+	;      of the bin's own ABI byte, which catches a partial SD update where m3nu.bin
+	;      and igmenu.bin came from different releases.
+	;      This check USED to sit after the whole snapshot + screen build, falling through
+	;      to a single-tab fail-safe list drawn right here. That fail-safe is gone: it was
+	;      a second renderer to keep working, and it pinned the "no cheats"/"CHEATS"
+	;      strings to hard-coded ASCII, because it lives in $C1 and cannot read the
+	;      language table in $C8. Failing HERE means an un-staged shell costs the user a
+	;      dead combo instead of a frozen game with no way out. ----
+	lda @IGMENU_GATE                       ; MCU staged+verified the bin?
+	beq ss_ovl_no_shell
+	lda @$c80004                           ; bin ABI version byte ($C80004 = IGMENU_ENTRY-4)
+	cmp #IGMENU_ABI_VERSION
+	beq ss_ovl_shell_ok
+ss_ovl_no_shell:
+	jmp @ss_exit                           ; nothing touched yet -> resume as-is (@ = long, ss_exit is $C0)
+ss_ovl_shell_ok:
+
 	; Halt the SA-1 coprocessor for the whole overlay (mk3 SA-1 core only; a
 	; harmless no-op on base/DSP, where $202C has no decode). The SA-1 runs
 	; autonomously while the SNES CPU is frozen, so without this it would both
@@ -286,8 +306,6 @@ ss_ovl_clr1:
 	;     name MUST be staged before the first list paint (cheatlist.i65 only reads
 	;     OVL_NONAME_BUF, and $F4 PSRAM comes up stale). ---
 	jsl @ovl_fill_noname
-	; --- title "CHEATS" (row 1) ---
-	jsr ss_ovl_draw_title
 
 	; --- init overlay state ---
 	rep #$30 : .al : .xl
@@ -358,17 +376,16 @@ ss_ovl_pos_done:
 	;     ss_ovl_draw_rows depend on CHEAT_WIN_BASE being current (on a fail-safe reopen after
 	;     scrolling past 64 it can be nonzero). Mirrors cheats_enter's order in the igmenu shell. ---
 	jsr ss_ovl_mq_reset                    ; slide the window + measure the first name for the marquee
-	; --- draw list (or "no cheats" message) ---
+	; --- pre-draw the list for the shell to open on top of. The empty-list message is
+	;     NOT drawn here any more: it is localized now and lives in $C8, and the shell's
+	;     cheats_enter draws it (this pre-draw is under forced blank and the shell
+	;     repaints the body of whatever tab it opens on). ---
 	rep #$20 : .al
 	lda @ovl_count
 	sep #$20 : .as
-	beq ss_ovl_init_empty
+	beq ss_ovl_init_drawn
 	jsr ss_ovl_draw_rows
-	bra ss_ovl_init_drawn
-ss_ovl_init_empty:
-	jsr ss_ovl_draw_empty
 ss_ovl_init_drawn:
-	jsr ss_ovl_draw_footer
 	rep #$20 : .al
 	lda #$0000 : sta @ovl_rep_cnt          ; no auto-repeat pending yet
 	sep #$20 : .as
@@ -453,100 +470,16 @@ ss_ovl_hdmasave:
 	lda #$02 : sta @$00420c               ; enable ch1 HDMA (BGMODE switch) -- AFTER all the
 	                                      ; GP-DMAs (font gen), per the game-info HDMA ordering
 
-	; --- Phase-0 in-game TAB menu dispatch (igmenu.bin @ PSRAM $C8, staged+verified
-	;     by the MCU this game-load). Two guards: the MCU-armed IGMENU_GATE, and a
-	;     re-check of the bin's ABI version word here (catches a partial SD update
-	;     where m3nu and igmenu.bin came from different releases). On both passing,
-	;     run the tab shell -- it draws the tab bar over this already-built (still
-	;     forced-blank) cheat screen, does its OWN unblank + input loop, and returns
-	;     via rtl when the user closes it; we then take the normal apply+restore exit.
-	;     ANY failure falls through to ovl_failsafe = the proven single-tab overlay.
-	;     A is 8-bit here (.as); X is 16-bit and free (ovl_stage_theme uses it as a
-	;     copy index). jsl/rtl is stack-balanced; the shell NEVER drops
-	;     snescmd_unlock (that would unmap $C8). ---
-	lda @IGMENU_GATE                      ; MCU staged+verified the bin?
-	beq ovl_failsafe
-	lda @$c80004                          ; bin ABI version byte ($C80004 = IGMENU_ENTRY-4)
-	cmp #IGMENU_ABI_VERSION
-	bne ovl_failsafe
+	; --- Hand off to the $C8 tab shell. Its presence was already proven at ss_overlay
+	;     entry, so there is no fallback here: it draws the tab bar over this
+	;     already-built (still forced-blank) cheat screen, does its OWN unblank and
+	;     input loop, and returns via rtl when the user closes it; we then take the
+	;     normal apply+restore exit. A is 8-bit here (.as); X is 16-bit and free
+	;     (ovl_stage_theme uses it as a copy index). jsl/rtl is stack-balanced; the
+	;     shell NEVER drops snescmd_unlock (that would unmap $C8). ---
 	jsr ovl_stage_theme                   ; publish the active theme for the $C8 shell
 	jsl $c80008                           ; $C80008 = IGMENU_ENTRY = jml igmenu_main; rtl on close
 	jmp ss_ovl_do_exit                    ; apply toggles (ovl_dirty) + savestate-grade restore
-ovl_failsafe:
-	lda #$0f : sta @$002100               ; unblank to full brightness
-
-; ---- input loop: edge-detected pad. ovl_pprev was seeded with the opening
-;      combo -- it samples the LIVE pad, so it works for ANY armed combo -- and the
-;      still-held buttons therefore produce no fresh edge (no instant
-;      exit/toggle, no drain needed).
-;        Up/Down = move cursor   A = toggle ON/OFF   B = close + apply ----
-ss_overlay_loop:
-	- lda @$004212 : bpl -                 ; wait until vblank (catches the rising edge)
-	; Robust auto-joypad sync: wait for the read to START (bit0=1) THEN FINISH
-	; (bit0=0). Just waiting for "finish" can catch the brief pre-read window
-	; (bit0 not yet set) and read a STALE pad -> the press edge double-fires on two
-	; non-adjacent frames (the "2x" auto-repeat). Both waits are safe here because
-	; we entered exactly at the vblank rising edge, so bit0 always rises.
-	- lda @$004212 : and #$01 : beq -      ; wait auto-joypad read START (bit0 set)
-	- lda @$004212 : and #$01 : bne -      ; wait auto-joypad read DONE (bit0 clear)
-	rep #$20 : .al
-	lda @$004218                           ; current pad word ($4218 lo / $4219 hi) - now fresh
-	sta @ovl_cur
-	eor @ovl_pprev
-	and @ovl_cur                           ; (cur ^ prev) & cur = newly pressed bits
-	sta @ovl_edge
-	lda @ovl_cur
-	sta @ovl_pprev
-	sep #$20 : .as
-	; --- flush the list rebuilt LAST frame (if any) to VRAM via DMA, here in vblank ---
-	lda @ovl_dma_pending
-	beq ss_ovl_no_dma
-	jsr ovl_dma_list
-	lda #$00 : sta @ovl_dma_pending
-ss_ovl_no_dma:
-	; B ($8000) -> close + apply
-	rep #$20 : .al
-	lda @ovl_edge
-	bit #$8000
-	sep #$20 : .as
-	beq ss_ovl_disp_a
-	jmp ss_ovl_do_exit
-ss_ovl_disp_a:
-	rep #$20 : .al
-	lda @ovl_edge
-	bit #$0080                             ; A (edge) -> toggle
-	sep #$20 : .as
-	beq ss_ovl_disp_lt                     ; (L/R = tab switch in the shell; no-op in the
-	jsr ss_ovl_toggle                      ;  single-tab fail-safe -- ss_ovl_home/end removed)
-ss_ovl_disp_lt:
-	rep #$20 : .al
-	lda @ovl_edge
-	bit #$0200                             ; Left (edge) -> page up
-	sep #$20 : .as
-	beq ss_ovl_disp_rt
-	jsr ss_ovl_page_up
-ss_ovl_disp_rt:
-	rep #$20 : .al
-	lda @ovl_edge
-	bit #$0100                             ; Right (edge) -> page down
-	sep #$20 : .as
-	beq ss_ovl_disp_nav
-	jsr ss_ovl_page_down
-ss_ovl_disp_nav:
-	jsr ss_ovl_nav_vert                    ; Up/Down with auto-repeat
-	jsr ss_ovl_marquee                     ; advance the selected-name marquee (paced)
-	; --- if anything marked the list dirty (scroll, page, cursor move, marquee step),
-	;     rebuild ALL rows into OVL_TMBUF now (active display, no vblank limit); the DMA
-	;     at the top of the loop flushes it next vblank ---
-	lda @ovl_scroll_dirty
-	beq ss_ovl_no_rebuild
-	jsr ovl_build_list_to_buf
-	lda #$01 : sta @ovl_dma_pending
-	lda #$00 : sta @ovl_scroll_dirty
-ss_ovl_no_rebuild:
-ss_ovl_loop_tail:
-	- lda @$004212 : bmi -                 ; wait out of vblank (one sample/frame)
-	jmp ss_overlay_loop
 
 ; ---- restore: full VRAM + full CGRAM + full PPU/$420X register file ----
 ;      Savestate-grade: mirrors load_write_table (data) + register_restore_return
