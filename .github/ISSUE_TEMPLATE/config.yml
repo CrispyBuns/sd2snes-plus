@@ -1,0 +1,17 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Original sd2snes firmware
+    url: https://github.com/mrehkopf/sd2snes/issues
+    about: >-
+      Bugs in the base firmware — anything that also happens on the original firmware.
+      This fork only changes the extras on top of it.
+  - name: Guides, downloads and FAQ
+    url: https://sd2snes.ludufre.com
+    about: >-
+      Install guide, how to build the SD card, themes, sounds, the Web Manager, and answers to
+      the questions that come up most.
+  - name: Game compatibility (NES, Master System, Atari 2600)
+    url: https://sd2snes.ludufre.com/gamesdb/compatibility
+    about: >-
+      These cores are experimental and many games do not run. Please check the list before
+      opening an issue about one.
