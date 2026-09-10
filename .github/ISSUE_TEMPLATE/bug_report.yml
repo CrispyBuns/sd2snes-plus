@@ -1,0 +1,146 @@
+name: Bug report
+description: Something in sd2snes+ does not work the way it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this.
+
+        **Please check first:** this repository is only for the extras sd2snes+ adds on top of the
+        original firmware (menu, languages, box art, game info, in-game menu, cheats, patches,
+        themes, savestates, the experimental NES/SMS/Atari cores…). If the same thing happens on
+        the original firmware from [mrehkopf/sd2snes](https://github.com/mrehkopf/sd2snes),
+        please report it there instead — that is where it can actually be fixed.
+
+        Everything below with a red asterisk saves us a round trip. The rest is optional, but the
+        more you fill in, the faster this gets solved.
+
+  - type: textarea
+    id: what-happens
+    attributes:
+      label: What happens?
+      description: What did you expect, and what happened instead?
+      placeholder: |
+        I open the in-game menu on Super Mario World and the CHEATS tab is empty.
+        I expected the list of cheats I put on the card.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: How do we reproduce it?
+      description: Step by step, from power-on. If it only happens sometimes, say how often.
+      placeholder: |
+        1. Power on the console
+        2. Load Super Mario World from the browser
+        3. Press L + R + Y + Left
+        4. The CHEATS tab is empty
+    validations:
+      required: true
+
+  - type: input
+    id: firmware
+    attributes:
+      label: Which firmware version?
+      description: >-
+        Main menu → System information, top line. Please give the full version,
+        including the beta suffix if there is one.
+      placeholder: "1.11.2-br-2.16b10"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: hardware
+    attributes:
+      label: Which cartridge?
+      description: >-
+        Not sure? [How to tell which one you
+        have](https://sd2snes.ludufre.com/#faq-versao)
+      options:
+        - FXPak Pro (Mk.III)
+        - SD2SNES (Mk.II)
+        - FXPak Pro with the STM32 board
+        - I am not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: console
+    attributes:
+      label: Which console motherboard?
+      description: >-
+        Printed on the board itself, so it means opening the console (six screws, a gamebit
+        driver). Worth it: several problems only show up on one family — the 1CHIP consoles in
+        particular drive the cartridge bus differently, and the fork has a "Bus timing compat"
+        option that exists exactly for the marginal ones. If you would rather not open it, pick
+        the last option.
+      options:
+        - "SHVC-CPU-01 (early, separate sound module)"
+        - "SNS-CPU-GPM-01"
+        - "SNS-CPU-GPM-02"
+        - "SNS-CPU-RGB-01"
+        - "SNS-CPU-RGB-02"
+        - "SNS-CPU-APU-01"
+        - "SNSP-CPU-01 (PAL)"
+        - "SNSP-CPU-02 (PAL)"
+        - "SNS-CPU-1CHIP-01"
+        - "SNS-CPU-1CHIP-02"
+        - "SNS-CPU-1CHIP-03"
+        - "SNSP-CPU-1CHIP-01 (PAL)"
+        - "SNSP-CPU-1CHIP-02 (PAL)"
+        - "SNN-CPU-01 (SNES Jr. / Super Famicom Jr.)"
+        - "Other - not in this list (write it under Anything else)"
+        - "I have not opened the console"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: region
+    attributes:
+      label: Which region is the console?
+      description: Region matters for anything timing related, and for PAL-only games.
+      options:
+        - NTSC (US / Canada / Latin America)
+        - NTSC-J (Japan)
+        - PAL (Europe / Australia / Brazil SNES)
+    validations:
+      required: true
+
+  - type: input
+    id: game
+    attributes:
+      label: Which game, and its checksum?
+      description: >-
+        Only if the problem happens with a specific game. The internal checksum is on the game
+        info screen; a CRC32 or MD5 of the file is just as good. If the ROM is patched or a
+        romhack, say so — that changes everything.
+      placeholder: "Super Mario World (USA), CRC32 B19ED489"
+
+  - type: textarea
+    id: media
+    attributes:
+      label: A photo or video of the problem
+      description: >-
+        Drag the file into this box. For anything graphical this is usually worth more than any
+        description — a photo of the TV is fine, it does not need to be a capture card.
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Memory test / diagnostics result
+      description: >-
+        For freezes, graphical corruption or games that used to work and stopped: run
+        **Main menu → Memory test** (press A for the wiring test, X for the full one) and paste
+        or photograph the result. It tells us in about 30 seconds whether the cartridge hardware
+        is at fault. There is also the
+        [official diagnostics firmware](https://sd2snes.de/blog/cool-stuff/sd2snes-diagnostics).
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: >-
+        Other cartridges or consoles you tried, whether it also happens on the original firmware,
+        the contents of `/sd2snes/config.yml` — whatever you think might matter.

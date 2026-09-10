@@ -13,8 +13,19 @@ module LoopyGen(input clk, input ce,
                 output [14:0] loopy,
                 output [2:0] fine_x_scroll,   // Current loopy value
                 output [14:0] loopy_t_out,   // sd2snes bridge tap: loopy_T (scroll intent)
-                output        w_out);        // sd2snes bridge tap: $2005/$2006 write toggle
+                output        w_out,         // sd2snes bridge tap: $2005/$2006 write toggle
                                              //   (ppu_address_latch; 0 = pair complete)
+                // sd2snes bridge tap: the CPU-SIDE shadow of loopy_V, plus a
+                // 1-cycle strobe on every write to it.  NOT `loopy_v` itself --
+                // that one is incremented by the RENDER (per-tile and per-row),
+                // and sampling it would hand the capture a fetch address
+                // instead of the address the game programmed.  This shadow only
+                // moves where the CPU moves it: the 2nd $2006 write and the
+                // $2007 auto-increment.  Lockstep with bridge_sim
+                // ppustate.apply_cpu_write/apply_cpu_read_sideeffect, which
+                // model exactly those two and nothing else.
+                output [14:0] loopy_v_cpu_out,
+                output        loopy_v_cpu_we);
   // Controls how much to increment on each write
   reg ppu_incr; // 0 = 1, 1 = 32
   // Current VRAM address
@@ -25,15 +36,21 @@ module LoopyGen(input clk, input ce,
   reg [2:0] loopy_x;
   // Latch
   reg ppu_address_latch;
+  // sd2snes bridge tap: CPU-side shadow of loopy_V (see the port comment)
+  reg [14:0] loopy_v_cpu;
+  reg        loopy_v_cpu_wr;
   initial begin
     ppu_incr = 0;
     loopy_v = 0;
     loopy_t = 0;
     loopy_x = 0;
     ppu_address_latch = 0;  
+    loopy_v_cpu = 0;
+    loopy_v_cpu_wr = 0;
   end
   // Handle updating loopy_t and loopy_v
   always @(posedge clk) if (ce) begin
+    loopy_v_cpu_wr <= 1'b0;   // sd2snes tap: 1-ce pulse, set by the two writers
     if (is_rendering) begin
       // Increment course X scroll right after attribute table byte was fetched.
       if (cycle[2:0] == 3 && (cycle < 256 || cycle >= 320 && cycle < 336)) begin
@@ -84,6 +101,8 @@ module LoopyGen(input clk, input ce,
       end else begin
         loopy_t[7:0] <= din;
         loopy_v <= {loopy_t[14:8], din};
+        loopy_v_cpu <= {loopy_t[14:8], din};   // sd2snes tap
+        loopy_v_cpu_wr <= 1'b1;
       end
       ppu_address_latch <= !ppu_address_latch;
     end else if (read && ain == 2) begin
@@ -91,10 +110,14 @@ module LoopyGen(input clk, input ce,
     end else if ((read || write) && ain == 7 && !is_rendering) begin
       // Increment address every time we accessed a reg
       loopy_v <= loopy_v + (ppu_incr ? 32 : 1);
+      loopy_v_cpu <= loopy_v_cpu + (ppu_incr ? 32 : 1);   // sd2snes tap
+      loopy_v_cpu_wr <= 1'b1;
     end
   end
   assign loopy = loopy_v;
   assign fine_x_scroll = loopy_x;
+  assign loopy_v_cpu_out = loopy_v_cpu;
+  assign loopy_v_cpu_we  = loopy_v_cpu_wr;
   // sd2snes bridge tap: at vblank loopy_V holds the STALE last-rendered VRAM
   // address; loopy_T holds the scroll intent (matches bridge_sim current_scroll,
   // which uses loopy_t).  See nes_bridge.v header (spec SS2.2 conflict).
@@ -509,7 +532,12 @@ module PPU(input clk, input ce, input reset,   // input clock  21.48 MHz / 4. 1 
            output reg [2:0]  tap_fine_x,
            output reg        tap_loopy_w,   // $2005/$2006 write toggle (0 = pair complete)
            output reg [7:0]  tap_ppuctrl,   // full $2000 byte
-           output reg [7:0]  tap_ppumask);  // full $2001 byte
+           output reg [7:0]  tap_ppumask,   // full $2001 byte
+           // sd2snes bridge tap: CPU-side shadow of loopy_V + its write strobe.
+           // See the LoopyGen port comment -- this is the address the GAME
+           // programmed through $2006/$2007, never the render's fetch address.
+           output reg [14:0] tap_loopy_v,
+           output reg        tap_loopy_v_we);
   // These are stored in control register 0
   reg obj_patt; // Object pattern table
   reg bg_patt;  // Background pattern table
@@ -537,6 +565,8 @@ module PPU(input clk, input ce, input reset,   // input clock  21.48 MHz / 4. 1 
     tap_loopy_w = 0;
     tap_ppuctrl = 0;
     tap_ppumask = 0;
+    tap_loopy_v = 0;
+    tap_loopy_v_we = 0;
     bg_patt = 0;
     obj_size = 0;
     vbl_enable = 0;
@@ -570,7 +600,9 @@ module PPU(input clk, input ce, input reset,   // input clock  21.48 MHz / 4. 1 
   wire [2:0] fine_x_scroll;
   wire [14:0] loopy_t_tap;
   wire        loopy_w_tap;
-  LoopyGen loopy0(clk, ce, is_rendering, ain, din, read, write, is_pre_render_line, cycle, loopy, fine_x_scroll, loopy_t_tap, loopy_w_tap);
+  wire [14:0] loopy_v_cpu_tap;   // sd2snes bridge tap: CPU-side shadow of loopy_V
+  wire        loopy_v_cpu_we_w;
+  LoopyGen loopy0(clk, ce, is_rendering, ain, din, read, write, is_pre_render_line, cycle, loopy, fine_x_scroll, loopy_t_tap, loopy_w_tap, loopy_v_cpu_tap, loopy_v_cpu_we_w);
   // Set to true if the current ppu_addr pointer points into
   // palette ram.
   wire is_pal_address = (loopy[13:8] == 6'b111111);
@@ -800,6 +832,10 @@ module PPU(input clk, input ce, input reset,   // input clock  21.48 MHz / 4. 1 
     tap_loopy_w <= loopy_w_tap;   // registered at the source (same as tap_loopy_t)
     tap_ppuctrl <= ppuctrl_full;
     tap_ppumask <= ppumask_full;
+    // registered at the source, same discipline as tap_loopy_t; the strobe is
+    // already ce-qualified inside LoopyGen so it stays a 1-CLK2 pulse here.
+    tap_loopy_v    <= loopy_v_cpu_tap;
+    tap_loopy_v_we <= loopy_v_cpu_we_w;
   end
 
 endmodule  // PPU

@@ -92,8 +92,14 @@
 #define SRAM_GAMEINFO_TILES_ADDR     (0xCA0000L) /* bank CA: game-info DirectColor 8bpp tiles (up to ~48KB) */
 #define SRAM_GAMEINFO_TMAP_ADDR      (0xCB0000L) /* bank CB: game-info 16-bit BG tilemap */
 #define SRAM_MENU_SFX_ADDR           (0xCC0000L) /* banks CC..CF (256 KB, free during menu, below cheats @D0):
-                                                    4x 64KB slots holding the preloaded nav-SFX PCM bodies the
-                                                    FPGA sfxdma engine streams into the DAC (msu1.c menusfx). */
+                                                    one SHARED budget, bump-allocated, holding the preloaded
+                                                    nav-SFX PCM bodies the FPGA sfxdma engine streams into the
+                                                    DAC (msu1.c menusfx).  It used to be four fixed 64 KB slots,
+                                                    which capped a single effect at 0.371 s and left anything
+                                                    longer silent; sharing lets one effect run to ~1.49 s as
+                                                    long as the other three are short.  Anything that overwrites
+                                                    this window must call menu_sfx_forget(), which rewinds the
+                                                    allocator as well as dropping the cache (memtest.c). */
 
 /* 0xFF0C00-0xFF0C07: savestate diagnostics (reject counter + watchdog breadcrumb +
    partial-sample gate breadcrumbs + the fill-wait throttle counter), owned and zeroed
@@ -162,6 +168,42 @@
 #define SRAM_MANUAL_S1META_ADDR      (0xFF0770L) /* scale-1 (1x) scrollable page meta, 16B right after MANUAL_META: +0 flags (bit0 = a 1x page is staged and ready), +1 nrows, +2..3 pix_h u16 LE (the viewer clamps vertical scroll to pix_h-224), +4 staged page, +5 staged guide, +6..7 scale-1 page count u16 LE. Lockstep with MANUAL_S1META in snes/memmap.i65. */
 #define SRAM_MANUAL_GUIDES_ADDR      (0xFF9000L) /* in-game guides list, 260B ($FF9000..$FF9103) staged at game load by manual.c (free area above CHEAT_NAMES $FF8000-$FF8FFF, below scratchpad $FFFF00). Layout: +0 count (0..8), +1 selected (active guide; SNES writes it; default 0), +2..3 rsvd, then record[8] of 32B each at +4: +0 present (1=valid; the list is compacted so 0..count-1 are present), +1 nn (0=".man", 2..8=".0N.man"), +2 flags (raw .man header flags: bit0 = LEGACY quadrant zoom -- IGNORED, never produced any more; bit1 = scrollable zoom section present), +3 npages, +4 nblocks u16 LE, +6 zoom_pages u16 LE (= nblocks when bit1 is set, else 0; a zoom page IS a 1x block rendered at 2x), +8 title[24] font-encoded NUL-term (copied raw from the .man header). Read by the GUIDES tab. Lockstep with MANUAL_GUIDES in snes/memmap.i65. */
 #define IGMENU_PERSIST_MAGIC_ADDR    (0xF4819EL) /* in-game menu session gate = the SNES-side man_pos_magic (PSRAM bank $F4), which keeps the remembered manual reading position AND the last-open tab across overlay close/reopen. Cleared to 0 here on every game load (manual_stage_meta) so position/tab never LEAK across games -- PSRAM $F4 survives a short power-cycle, so relying on stale-PSRAM alone was not enough. Lockstep with man_pos_magic / MN_POS_MAGIC in snes/igmenu.a65. */
+
+/* ---- in-game RAM trainer (src/trainer.c, snes/trainer.i65) ---------------
+   PSRAM banks $FA-$FC, the only contiguous SNES-visible hole big enough for a
+   128 KiB WRAM snapshot plus a candidate bitmap. Why it is safe:
+     - no other region in this header or in snes/memmap.i65 lives in $FA-$FC;
+       the only tokens in the range were the dead SS_CODE/SS_DATA defines that
+       snes/savestate.i65 marked "should be unused" (retired with this block).
+     - the savestate image is $F00000..$F4FFFF and the FPGA mirrors are $F5-$F9,
+       so init()'s sram_memset(0xF70000, 0x30000, 0) ends EXACTLY at $FA0000.
+     - inside the in-game IS_PATCH window ($C0-$FF identity, held while the hook
+       owns snescmd_unlock) only $F905xx/$F907xx (and $F90720 on the SA-1 core)
+       are served by the FPGA; $FA-$FC is plain PSRAM on every core.
+     - RAM0 is 16 MB on BOTH boards (see MT_RAM0_SIZE in src/memtest.c), so this
+       does not fork Mk.II vs Mk.III.
+   Like $F4 it is NOT cleared at game load and survives a short power-cycle, so
+   the block is gated by its own magic, which trainer_stage() zeroes every load. */
+#define SRAM_TRAINER_BITMAP_ADDR     (0xFA0000L) /* candidate bitmap: 131072 bits = 16 KiB, bit n = "WRAM offset n is still a candidate" (byte n>>3, bit n&7, LSB = lowest offset). */
+#define TRAINER_BITMAP_BYTES         (16384)
+#define SRAM_TRAINER_META_ADDR       (0xFA4000L) /* trainer_blk_t (src/trainer.h): magic "TRNR" + search state + the freeze slot table. 64 B in a bank with 47 KiB to spare. */
+#define TRAINER_META_BYTES           (64)
+#define SRAM_TRAINER_SNAP_LO_ADDR    (0xFB0000L) /* previous-value snapshot of WRAM $7E0000-$7EFFFF. Bank-identity with $7E so the scan is `lda @$7E0000,x` / `cmp @$FB0000,x` with no address arithmetic. */
+#define SRAM_TRAINER_SNAP_HI_ADDR    (0xFC0000L) /* previous-value snapshot of WRAM $7F0000-$7FFFFF (bank-identity with $7F). */
+
+/* Pristine copy of the 4 KiB menu font, taken the first time theme_font_edges()
+   remaps it for the current menu image. The remap only ever CLEARS high-plane
+   bits (see theme_font_remap), so turning an edge back on -- or swapping which
+   one is off -- can only be served from an untouched original; without this the
+   two text-edge options could only be applied by reloading the whole menu, which
+   threw the user out of the settings screen they were standing in. Lives in the
+   spare half of the trainer bank: nothing clears $FA (the game-load mirror wipe
+   sram_memset(0xF70000, 0x30000, 0) stops exactly at $FA0000), the trainer block
+   itself ends at $FA403F, and the two never coexist anyway -- the trainer is
+   game-time state and this is menu-time state. Re-captured on every menu load,
+   because theme_apply() clears the "captured" flag along with theme_font_flags. */
+#define SRAM_FONT_ORIG_ADDR          (0xFA8000L)
+#define FONT_ORIG_BYTES              (0x1000)
 
 #define SRAM_SKIN_ADDR               (0xF00000L)
 
@@ -257,7 +299,7 @@
    above is capped by the YAML parser (YAML_BUFLEN); this region carries the complete text,
    read with a streaming line scanner outside the YAML parser. A 1st byte of 0 = invalid ->
    the menu falls back to the struct's description[256]. Sits after the struct's end
-   ($FF759D) and before SRAM_SCRATCHPAD ($FFFF00); lockstep with GI_DESC_EXT in
+   ($FF75C5, once publisher[40] was appended) and before SRAM_SCRATCHPAD ($FFFF00); lockstep with GI_DESC_EXT in
    snes/memmap.i65. */
 #define SRAM_GAMEINFO_DESCEXT_ADDR   (0xFF7600L)
 #define SRAM_SCRATCHPAD              (0xFFFF00L)
@@ -297,6 +339,20 @@ _Static_assert(SRAM_SYSINFO_ADDR + 128 <= SRAM_LASTGAME_ADDR,
                "the sysinfo block (128 B) must stay below LAST_GAME");
 _Static_assert(SRAM_WIFI_ADDR + 437 <= SRAM_LASTGAME_FILE_ADDR,
                "the WiFi block (437 B) must stay below LAST_GAME_FILE");
+_Static_assert(SRAM_TRAINER_BITMAP_ADDR + TRAINER_BITMAP_BYTES <= SRAM_TRAINER_META_ADDR,
+               "the trainer bitmap (16 KiB) must stay below the trainer meta block");
+_Static_assert(SRAM_TRAINER_META_ADDR + TRAINER_META_BYTES <= SRAM_TRAINER_SNAP_LO_ADDR,
+               "the trainer meta block must stay below the WRAM snapshot");
+_Static_assert(SRAM_TRAINER_SNAP_LO_ADDR + 0x10000L == SRAM_TRAINER_SNAP_HI_ADDR,
+               "the two trainer snapshot banks must be adjacent and bank-aligned");
+_Static_assert(SRAM_FONT_ORIG_ADDR >= SRAM_TRAINER_META_ADDR + TRAINER_META_BYTES
+               && SRAM_FONT_ORIG_ADDR + FONT_ORIG_BYTES <= SRAM_TRAINER_SNAP_LO_ADDR,
+               "the pristine font copy must fit in the spare tail of the trainer bank");
+_Static_assert(SRAM_TRAINER_SNAP_HI_ADDR + 0x10000L <= SRAM_SPC_DATA_ADDR,
+               "the trainer snapshot must stay below the menu SPC data bank");
+_Static_assert(SRAM_TRAINER_BITMAP_ADDR >= 0xF70000L + 0x30000L,
+               "the trainer state must start at or above the end of init()'s mirror clear");
+
 /* address.v derives the Slot B window by ORing bit 19 into SAVERAM_ADDR: the two
    constants cannot drift apart without the FPGA and the MCU disagreeing. */
 _Static_assert(SUFAMI_SLOTB_SAVE_ADDR == (SRAM_SAVE_ADDR | 0x80000L),

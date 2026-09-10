@@ -346,13 +346,15 @@ cover_fire_send:
   rts
 
 ; -- cover_maybe_fire: when dirty + debounced + nothing in flight, fire
-;    CMD_LOAD_COVER for ROM/SPC entries (or hide the cover otherwise).
+;    CMD_LOAD_COVER for ROM/NES/SPC entries (or hide the cover otherwise).
 cover_maybe_fire:
   jsr cover_fire_gate
   bcs cmf_out
   jsr cover_sel_type        ; A = type of highlighted entry
   cmp #TYPE_ROM
   beq cmf_dofire
+  cmp #TYPE_NES             ; .nes has its own sidecar namespace on the card, so it gets
+  beq cmf_dofire            ; box art like any other ROM -- without this it never asked
   cmp #TYPE_SPC
   beq cmf_dofire
   ; not a ROM/SPC: stop asking, hide any cover

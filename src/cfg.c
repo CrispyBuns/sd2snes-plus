@@ -79,6 +79,11 @@ _Static_assert(offsetof(cfg_t, enable_sram_slots) == 0x146, "cfg_t.enable_sram_s
 _Static_assert(offsetof(cfg_t, ingame_buttons_menu) == 0x147, "cfg_t.ingame_buttons_menu must stay at CFG_ADDR+$147");
 _Static_assert(offsetof(cfg_t, a26_video_width) == 0x149, "cfg_t.a26_video_width must stay at CFG_ADDR+$149");
 _Static_assert(offsetof(cfg_t, cc_time_limit) == 0x14a, "cfg_t.cc_time_limit must stay at CFG_ADDR+$14A");
+_Static_assert(offsetof(cfg_t, menu_music_random) == 0x14b, "cfg_t.menu_music_random must stay at CFG_ADDR+$14B");
+_Static_assert(offsetof(cfg_t, menu_music_folder) == 0x14c, "cfg_t.menu_music_folder must stay at CFG_ADDR+$14C");
+_Static_assert(offsetof(cfg_t, text_outline_mode) == 0x1cc, "cfg_t.text_outline_mode must stay at CFG_ADDR+$1CC");
+_Static_assert(offsetof(cfg_t, text_antialias_mode) == 0x1cd, "cfg_t.text_antialias_mode must stay at CFG_ADDR+$1CD");
+_Static_assert(offsetof(cfg_t, ask_clock_on_boot) == 0x1ce, "cfg_t.ask_clock_on_boot must stay at CFG_ADDR+$1CE");
 
 const cfg_t CFG_DEFAULT = {
   .vidmode_menu = VIDMODE_60,
@@ -140,7 +145,12 @@ const cfg_t CFG_DEFAULT = {
   .enable_sram_slots = 1,
   .ingame_buttons_menu = SNES_BUTTON_L | SNES_BUTTON_R | SNES_BUTTON_Y | SNES_BUTTON_LEFT,
   .a26_video_width = 0,
-  .cc_time_limit = 3   /* 6 minutes, the event setting */
+  .cc_time_limit = 3,  /* 6 minutes, the event setting */
+  .menu_music_random = 0,
+  .menu_music_folder = "/sd2snes/music",
+  .text_outline_mode = 0,    /* follow the theme */
+  .text_antialias_mode = 0,
+  .ask_clock_on_boot = 1
 };
 
 cfg_t CFG;
@@ -225,8 +235,9 @@ typedef struct {
 } cfg_item_t;
 
 #define CFG_STR_LEN (sizeof(CFG_DEFAULT.skin_name))
-_Static_assert(sizeof(CFG_DEFAULT.bgm_name) == CFG_STR_LEN,
-               "both CK_STR fields must share one length");
+_Static_assert(sizeof(CFG_DEFAULT.bgm_name) == CFG_STR_LEN
+               && sizeof(CFG_DEFAULT.menu_music_folder) == CFG_STR_LEN,
+               "every CK_STR field must share one length");
 
 /* The favorites mirror is 20 x 256 bytes and the game info block starts right after
    it: raising a cap on one side only lets the SNES overwrite the other from
@@ -244,7 +255,7 @@ static const cfg_item_t cfg_items[] = {
   CFGI(CFG_R213F_OVERRIDE,              r213f_override,             CK_BOOL,    0),
   CFGI(CFG_1CHIP_TRANSIENT_FIXES,       onechip_transient_fixes,    CK_BOOL,    0),
   CFGI(CFG_BRIGHTNESS_LIMIT,            brightness_limit,           CK_NIB,     0),
-  CFGI(CFG_ENABLE_RST_TO_MENU,          reset_to_menu,              CK_NUM,     0x31),
+  CFGI(CFG_ENABLE_RST_TO_MENU,          reset_to_menu,              CK_NUM,     0x41),
   CFGI(CFG_ENABLE_CHEATS,               enable_cheats,              CK_BOOL,    0),
   CFGI(CFG_ENABLE_INGAME_HOOK,          enable_ingame_hook,         CK_BOOL,    0),
   CFGI(CFG_ENABLE_INGAME_BUTTONS,       enable_ingame_buttons,      CK_BOOL,    0),
@@ -279,7 +290,7 @@ static const cfg_item_t cfg_items[] = {
   CFGI(CFG_COVERS_IN_LISTS,             covers_in_lists,            CK_BOOL,    0),
   /* An unclamped value leaves cur_lang past the last column of every dispatch
      table in the menu. */
-  CFGI(CFG_LANGUAGE,                    language,                   CK_NUM,     0x50),
+  CFGI(CFG_LANGUAGE,                    language,                   CK_NUM,     0x60),
   CFGI(CFG_PATCH_VERIFY_INTEGRITY,      patch_verify_integrity,     CK_BOOL,    0),
   CFGI(CFG_ENABLE_MENU_MUSIC,           enable_menu_music,          CK_BOOL,    0),
   CFGI(CFG_ENABLE_MENU_SFX,             enable_menu_sfx,            CK_BOOL,    0),
@@ -297,7 +308,12 @@ static const cfg_item_t cfg_items[] = {
   CFGI(CFG_SHOW_GAME_INFO,              show_game_info,             CK_NUM,     0x21),
   CFGI(CFG_GAME_INFO_VIDEO,             game_info_video,            CK_BOOL,    0),
   CFGI(CFG_GAME_INFO_MUSIC,             game_info_music,            CK_BOOL,    0),
-  CFGI(CFG_ENABLE_WIFI,                 enable_wifi,                CK_BOOL,    0)
+  CFGI(CFG_ENABLE_WIFI,                 enable_wifi,                CK_BOOL,    0),
+  CFGI(CFG_MENU_MUSIC_RANDOM,           menu_music_random,          CK_BOOL,    0),
+  CFGI(CFG_MENU_MUSIC_FOLDER,           menu_music_folder,          CK_STR,     0),
+  CFGI(CFG_TEXT_OUTLINE,                text_outline_mode,          CK_NUM,     0x20),
+  CFGI(CFG_TEXT_ANTIALIAS,              text_antialias_mode,        CK_NUM,     0x20),
+  CFGI(CFG_ASK_CLOCK_ON_BOOT,           ask_clock_on_boot,          CK_BOOL,    0)
 };
 #undef CFGI
 

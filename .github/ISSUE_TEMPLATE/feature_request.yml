@@ -1,0 +1,85 @@
+name: Feature request
+description: Suggest something new for sd2snes+, or an improvement to what is already there
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ideas are welcome. Two things worth knowing before you write:
+
+        - **It may already exist.** The firmware has grown a lot — have a look at
+          [Features & guides](https://sd2snes.ludufre.com/#recursos) first.
+        - **This fork only adds things on top of the original firmware.** Changes to how the
+          base firmware runs games belong at
+          [mrehkopf/sd2snes](https://github.com/mrehkopf/sd2snes/issues).
+
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like?
+      description: Describe it the way you would explain it to another user, not as a spec.
+      placeholder: |
+        A way to mark a game as a favourite straight from the game info screen, without going
+        back to the browser first.
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does it solve?
+      description: >-
+        What do you do today instead, and why is that annoying? This matters more than the
+        solution — knowing the actual problem often leads to a better answer than the one
+        originally asked for.
+      placeholder: |
+        Today I have to close the info screen, find the game again in the list and press Y.
+        With a big collection, finding it again is the slow part.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part is this about?
+      options:
+        - Menu and browser
+        - In-game menu (cheats, savestates, saves, guides, trainer)
+        - Box art, game info or manuals
+        - Themes, menu music or sounds
+        - Patches (IPS/BPS)
+        - Special chips or cartridges (SA-1, SuperFX, SPC7110, Sufami Turbo…)
+        - Experimental cores (NES, Master System, Atari 2600)
+        - Web Manager or GamesDB
+        - Something else
+    validations:
+      required: true
+
+  - type: dropdown
+    id: mk2
+    attributes:
+      label: Does it need to work on the SD2SNES (Mk.II) as well?
+      description: >-
+        Not a trick question, and "yes" will not get your idea rejected — but it is worth
+        knowing. The Mk.II has a smaller FPGA and its firmware flash is close to full, so some
+        features can only ever be FXPak Pro (Mk.III). Saying "Mk.III is fine" sometimes turns an
+        impossible idea into an easy one.
+      options:
+        - Yes, I use an SD2SNES (Mk.II)
+        - No, FXPak Pro (Mk.III) only is fine
+        - I do not know / either way
+    validations:
+      required: true
+
+  - type: textarea
+    id: prior-art
+    attributes:
+      label: Has anyone done this before?
+      description: >-
+        Another flashcart, an emulator, an older firmware, a screenshot or mockup — anything
+        that shows what you have in mind. Very useful, entirely optional.
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?

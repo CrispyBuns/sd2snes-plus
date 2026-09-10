@@ -29,6 +29,28 @@
  * menu intact; never hangs the MCU. */
 void theme_apply(void);
 
+/* Apply the menu font's edge remaps (outline ring / anti-alias step) to the
+ * just-loaded menu image in PSRAM. Call right AFTER theme_apply, from the same
+ * spot: it ORs the .thm font flags theme_apply published with the user options
+ * CFG.text_outline / CFG.text_antialias, so the toggles work with AND without a
+ * theme. A no-op (not even a _GFXPTR_ scan) when neither source asks for a
+ * remap, which is the default. Bounded and fail-safe like theme_apply. */
+void theme_font_edges(void);
+
+/* 1 when the effective font-edge state (theme flags OR the user toggles) no
+ * longer matches what theme_font_edges last wrote into the PSRAM font. The
+ * remap is destructive -- turning an edge back ON needs a fresh menu image --
+ * so the SAVE_CFG handler uses this to ask for a menu reload, which is what
+ * makes the two toggles take effect as soon as the options screen is left. */
+int theme_font_edges_stale(void);
+
+/* Values of CFG.text_outline_mode / CFG.text_antialias_mode.  THEME is 0 so that a
+ * config.yml written before the option existed -- and any value out of range, which
+ * cfg.c clamps to 0 -- lands on the historical behaviour. */
+#define TEXT_EDGE_THEME  0
+#define TEXT_EDGE_ON     1
+#define TEXT_EDGE_OFF    2
+
 /* Persist the chosen theme. `name` is the full SD path of a .thm (as returned
  * by get_selected_name) or NULL/empty to clear back to the baked default.
  * Updates CFG.skin_name and saves config. */

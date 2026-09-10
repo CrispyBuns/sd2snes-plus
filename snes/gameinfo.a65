@@ -65,19 +65,26 @@
 ; body text layout (hiprint half-columns; mode 5 hires = 64 cols). Row 16 (the first
 ; mode-5 row) is left BLANK as a seam margin: the BGMODE switch glitches its top scanline,
 ; which shows up in blank/space cells (it garbled the title when the title sat on row 16).
-;   17 title | 18 gap | 19 Developer + chip | 20 Year|Genre|Players (3 cols) |
-;   22..24 description (3 lines, ellipsis) | 25 gap | 26 footer. Row 16 + the footer at 26
+;   17 title | 18 gap | 19 Publisher | 20 Developer + chip | 21 Year|Genre|Players (3 cols) |
+;   23..24 description (2 lines, ellipsis) | 25 gap | 26 footer. Row 16 + the footer at 26
 ;   (NOT 27) make the footer land on the SAME scanline as the browser's status bar (the
 ;   browser shifts its mode-5 content up via BG2VOFS=11 in setup_224, so its print_y=28 ==
 ;   our print_y=26 at VOFS=0), and the blank row 25 mirrors the browser's gap between the
-;   last list row and its status bar. Row 18 is a small breather under the title.
+;   last list row and its status bar. Row 18 is a small breather under the title, and row 22
+;   the matching one under the metadata block. The footer row is the FIXED anchor of this
+;   layout: adding the Publisher row pushed Developer/metadata/description down by one and
+;   the description paid for it (3 rows -> 2), because moving the footer would break the
+;   status-bar alignment above.
 #define GI_DESC_IW       58
 #define GIB_TITLE_ROW    17
 #define GIB_LBL_X        2
 #define GIB_VAL_X        18
-#define GIB_DEV_ROW      19        ; Developer on its own row (row 18 = gap under the title)
-#define GIB_DEV_VAL_W    24        ; clip the dev value so it never reaches the chip name
-#define GIB_META_ROW     20        ; Year | Genre | Players on one 3-column row
+#define GIB_PUB_ROW      19        ; Publisher on its own row (row 18 = gap under the title).
+                                   ; Same geometry as the Developer row below -> both are drawn
+                                   ; by gi_meta_pair, which shares GIB_VAL_X/GIB_DEV_VAL_W
+#define GIB_DEV_ROW      20        ; Developer on its own row (+ the chip badge on the right)
+#define GIB_DEV_VAL_W    24        ; clip the dev/publisher value so it never reaches the chip name
+#define GIB_META_ROW     21        ; Year | Genre | Players on one 3-column row
 ; 3-column metadata (label/value pairs across the 64 hi-res half-columns):
 #define GIB_M1_LBL       2         ; Year
 #define GIB_M1_VAL       7
@@ -88,16 +95,9 @@
 #define GIB_M3_VAL       50
 #define GIB_CHIP_X       44        ; chip NAME text X (Developer row, left of the OBJ icon)
 #define GIB_CHIP_W       12        ; chip name clip (ends before the icon)
-; chip OBJ icon (16x16, .gd path only -- the .cov band path owns OBJ, shows name only):
-#define GIB_CHIP_ICON_X  224       ; sprite X in px (far right; row-20 metadata ends ~px 220)
-#define GIB_CHIP_ICON_Y  152       ; sprite Y in px (= GIB_DEV_ROW*8; spans rows 19-20)
-#define GI_CHIP_OBSEL    $02        ; $2101: OBJ name base $4000 (over unused BG2 font #160+), 8/16
-#define GI_CHIP_VRAM0    $4a00      ; tiles #160,#161 (top row of the 16x16)
-#define GI_CHIP_VRAM1    $4b00      ; tiles #176,#177 (bottom row)
-#define GI_CHIP_TILE     160        ; OAM tile number (top-left of the 2x2)
 #define GIB_DESC_X       2
-#define GIB_DESC_R0      22        ; short (normal) description: first row (row 21 = gap under metadata)
-#define GIB_NORM_DESC_RL 24        ; short (normal) description: last row -> 3 lines (22..24), ellipsis
+#define GIB_DESC_R0      23        ; short (normal) description: first row (row 22 = gap under metadata)
+#define GIB_NORM_DESC_RL 24        ; short (normal) description: last row -> 2 lines (23..24), ellipsis
 #define GIB_FULL_R0      17        ; full (Y) description: first row (over the title/metadata)
 #define GIB_DESC_RL      24        ; full (Y) description: last text row (row 25 = gap under it, mirrors
                                    ; the normal screen's gap; footer on row 26, always fixed below)
@@ -354,10 +354,11 @@ gsr_joy:
 ; the moved selection reloads any game. Only wired for the browser (gi_query_fill==1).
 ; ===========================================================================
 
-; -- gi_nav_next / gi_nav_prev: move the browser selection to the next / previous TYPE_ROM
-;    entry, skipping dirs/parent/spc/theme, CLAMPED at the list ends (no wrap). Returns
-;    carry CLEAR if it landed on a new ROM (caller reloads), carry SET if there was no
-;    further ROM that way (selection restored, unchanged). Mirrors the filesel window/scroll
+; -- gi_nav_next / gi_nav_prev: move the browser selection to the next / previous bootable
+;    entry (TYPE_ROM or TYPE_NES), skipping dirs/parent/spc/theme, CLAMPED at the list ends
+;    (no wrap). Returns carry CLEAR if it landed on a new ROM (caller reloads), carry SET if
+;    there was no further ROM that way (selection restored, unchanged).
+;    Mirrors the filesel window/scroll
 ;    math but WITHOUT scroll_direntry_clean (it repaints the browser list -> would corrupt
 ;    our VRAM). One cursor blip per press. .as/.xl in/out.
 gi_nav_next:
@@ -393,7 +394,12 @@ gnav_moved:
   beq gnav_clamp
   jsr cover_sel_type         ; A = entry type byte (8-bit)
   cmp #TYPE_ROM
+  beq gnav_hit
+  cmp #TYPE_NES              ; .nes is a bootable entry too (filesel.a65 pairs the two
+                             ; everywhere); without this an all-.nes folder never matches,
+                             ; every press falls through to gnav_clamp and Up/Down look dead
   bne gnav_loop              ; skip non-ROM (dir / parent / spc / theme)
+gnav_hit:
   clc                        ; landed on a ROM
   rts
 gnav_clamp:
@@ -596,7 +602,7 @@ gi_dc_show:
   ;     would show it over the gradient, so clip BG1/BG2 OUTSIDE px 1..252 via WINDOW 2.
   ;     (Window 1 is off-limits: the menu NMI rewrites its left/right $2126/$2127 every
   ;     frame for the cursor bar. Window 2's $2128/$2129 are never touched.) OBJ is left
-  ;     unclipped so the chip icon shows; clipped pixels fall back to the gradient backdrop. ---
+  ;     unclipped (the cover rides it); clipped pixels fall back to the gradient backdrop. ---
   lda #$cc : sta $2123       ; BG1+BG2: window-2 enable + invert (mask area = OUTSIDE)
   stz $2125                  ; OBJ/colour window off (NMI's window-1 writes stay inert)
   stz $212a                  ; BG window logic = OR (single window -> = window 2 alone)
@@ -619,7 +625,6 @@ gi_dc_show:
   ; --- build the screen ---
   jsr gi_upload_band         ; image tiles + remapped band tilemap; clear BG2 band
   jsr gi_draw_body           ; hiprint metadata + wrapped description (mode-5 body)
-  jsr gi_chip_icon           ; 16x16 microchip OBJ next to the chip name (.gd path only)
   lda @GI_FLAGS              ; arm the FMV frame pacing when a .fmv is playing (else no-op)
   and #GI_FLAG_FMV
   beq gidcs_nofmv
@@ -1103,8 +1108,9 @@ gi_draw_body:
   plp
   rts
 
-; -- gi_build_body_normal: title (17) | Developer + chip badge (19) | Year|Genre|Players
-;    (20, 3 columns) | short description (22..24, 3 lines) | gap (25) | footer (26). .as/.xl in.
+; -- gi_build_body_normal: title (17) | Publisher (19) | Developer + chip badge (20) |
+;    Year|Genre|Players (21, 3 columns) | short description (23..24, 2 lines) | gap (25) |
+;    footer (26). .as/.xl in.
 gi_build_body_normal:
   php
   sep #$20 : .as
@@ -1117,16 +1123,24 @@ gi_build_body_normal:
   lda #60 : sta print_count
   ldx #!GI_TITLE : lda #^GI_TITLE
   jsr gi_puts
-  ; Developer on its own row (value clipped so it never reaches the chip badge)
-  lda #GIB_DEV_ROW : sta print_y
-  jsr gi_meta_lbl
-  ldx #!text_gi_developer : lda #^text_gi_developer
-  jsr gi_puts
-  lda #GIB_VAL_X : sta print_x
-  lda #$02 : sta print_pal
-  lda #GIB_DEV_VAL_W : sta print_count
-  ldx #!GI_DEVELOPER : lda #^GI_DEVELOPER
-  jsr gi_puts
+  ; Publisher, then Developer: same geometry, so both go through gi_meta_pair (this bank is
+  ; nearly full -- one shared painter costs less than two copies of the nine setup stores).
+  ; The Publisher row is skipped whole when the field is absent: an older firmware knows
+  ; nothing about GI_PUBLISHER and leaves those bytes at 0 (fresh) or $FF (untouched SRAM).
+  lda @GI_PUBLISHER
+  beq gib_nopub
+  inc                        ; $ff -> 0: catches the never-written case in one extra byte
+  beq gib_nopub
+  lda #GIB_PUB_ROW
+  ldx #!text_gi_publisher
+  ldy #!GI_PUBLISHER
+  jsr gi_meta_pair
+gib_nopub:
+  ; Developer (value clipped so it never reaches the chip badge)
+  lda #GIB_DEV_ROW
+  ldx #!text_gi_developer
+  ldy #!GI_DEVELOPER
+  jsr gi_meta_pair
   ; chip badge (right side of the Developer row), only when there is a special chip
   jsr gi_draw_chip
   ; Year | Genre | Players -- three label/value columns on one row
@@ -1143,7 +1157,7 @@ gi_build_body_normal:
   ldx #!text_gi_players : lda #^text_gi_players : jsr gi_puts
   lda #GIB_M3_VAL : sta print_x : lda #$02 : sta print_pal : lda #6 : sta print_count
   ldx #!GI_PLAYERS : lda #^GI_PLAYERS : jsr gi_puts
-  ; short description (rows GIB_DESC_R0..GIB_NORM_DESC_RL = 3 lines, no scroll)
+  ; short description (rows GIB_DESC_R0..GIB_NORM_DESC_RL = 2 lines, no scroll)
   lda #GIB_DESC_R0 : sta gi_desc_top
   lda #GIB_NORM_DESC_RL : sta gi_desc_rl
   rep #$20 : .al
@@ -1197,8 +1211,7 @@ gi_dma_body:
 
 ; -- gi_draw_chip: the special-chip NAME text on the Developer row (left of the OBJ icon),
 ;    in the value colour. Skipped when GI_CHIP is empty or the "-" placeholder (no special
-;    chip). Pure body text -> cleared/redrawn for free in Y mode. Shown in BOTH paths; the
-;    OBJ icon (gi_chip_icon) only joins it in the .gd path. .as/.xl in.
+;    chip). Pure body text -> cleared/redrawn for free in Y mode.
 gi_draw_chip:
   php
   sep #$20 : .as
@@ -1217,119 +1230,6 @@ gdc_none:
   plp
   rts
 
-; -- gi_chip_has: carry CLEAR when a chip icon should be shown -- a special chip exists AND
-;    the band is the .gd image (so OBJ is free; the .cov band path owns OBJ for the cover, and
-;    shows the chip as text only). A/flags only. .as in.
-gi_chip_has:
-  lda @GI_FLAGS
-  and #GI_FLAG_IMAGE
-  beq gch_no                 ; .cov band -> OBJ taken by the cover; name text only
-  lda @GI_CHIP
-  beq gch_no
-  cmp #$2d
-  beq gch_no
-  clc
-  rts
-gch_no:
-  sec
-  rts
-
-; -- gi_chip_icon: float the 16x16 microchip OBJ next to the chip name (.gd path only).
-;    Tiles -> unused BG2 font slots #160/#161/#176/#177 ($4A00/$4B00), pal -> CGRAM 128
-;    (OBJ pal 0, free in the .gd path), one sprite in OAM slot 0 at the far right of the
-;    metadata block. Runs in gi_dc_show's forced blank. The .gd band uses no OBJ otherwise,
-;    so enabling OBJ here is safe; gi_chip_obj_hide drops it during Y mode. .as/.xl in.
-gi_chip_icon:
-  php
-  sep #$20 : .as
-  rep #$10 : .xl
-  jsr gi_chip_has
-  bcs gci_done
-  lda #GI_CHIP_OBSEL : sta $2101
-  ; tiles: top row (#160,#161) -> $4A00, bottom row (#176,#177) -> $4B00 (64 bytes each)
-  ldx #GI_CHIP_VRAM0 : stx $2116
-  DMA7(#$01, #$0040, #^gi_chip_tiles, #!gi_chip_tiles, #$18)
-  ldx #GI_CHIP_VRAM1 : stx $2116
-  DMA7(#$01, #$0040, #^gi_chip_tiles, #!gi_chip_tiles+64, #$18)
-  ; palette -> CGRAM 128 (OBJ palette 0)
-  lda #$80 : sta $2121
-  DMA7(#$00, #$0020, #^gi_chip_pal, #!gi_chip_pal, #$22)
-  ; OAM slot 0 = the icon; hide slots 1..63 (slots 64..127 stay hidden from boot)
-  jsr gi_chip_build_oam
-  ldx #COVER_OAM_FIRST*2 : stx $2102
-  DMA7(#$00, #COVER_OAM_LO_BYTES, #^COVER_OAM_LO, #!COVER_OAM_LO, #$04)
-  ldx #$0100 : stx $2102       ; high table: size=1 (16x16), X bit8=0
-  DMA7(#$08, #COVER_OAM_HI_BYTES, #^oamlarge, #!oamlarge, #$04)
-  lda #$13 : sta $212c         ; enable OBJ (.gd band uses no OBJ otherwise)
-  sta $212d
-gci_done:
-  plp
-  rts
-
-; -- gi_chip_build_oam: slot 0 = the 16x16 chip sprite at (GIB_CHIP_ICON_X, GIB_CHIP_ICON_Y),
-;    tile GI_CHIP_TILE, attr $30 (priority 3, OBJ pal 0); slots 1..63 hidden (Y=$f0). Built in
-;    COVER_OAM_LO (free in the .gd path -- the cover isn't shown). .as/.xl in.
-gi_chip_build_oam:
-  php
-  sep #$20 : .as
-  rep #$10 : .xl
-  ldx #$0000
-  lda #GIB_CHIP_ICON_X : sta @COVER_OAM_LO,x     ; byte 0: X
-  inx
-  lda #GIB_CHIP_ICON_Y : sta @COVER_OAM_LO,x     ; byte 1: Y
-  inx
-  lda #GI_CHIP_TILE    : sta @COVER_OAM_LO,x     ; byte 2: tile
-  inx
-  lda #$30             : sta @COVER_OAM_LO,x     ; byte 3: attr (priority 3, OBJ pal 0)
-  inx
-gcb_oam_hide:
-  cpx #COVER_OAM_LO_BYTES
-  bcs gcb_oam_done
-  lda #$f0 : sta @COVER_OAM_LO,x                 ; hide unused slots (Y=$f0)
-  inx
-  bra gcb_oam_hide
-gcb_oam_done:
-  plp
-  rts
-
-; -- gi_chip_obj_hide / _show: drop/restore the .gd chip icon for Y mode. In the .gd path OBJ
-;    is ONLY this icon, so toggling the OBJ layer bit is enough (the .cov cover, which would
-;    own OBJ, is in the other band path where gi_chip_has is false -> these are no-ops). .as in.
-gi_chip_obj_hide:
-  php
-  sep #$20 : .as
-  jsr gi_chip_has
-  bcs gcoh_done
-  lda #$03 : sta $212c
-  sta $212d
-gcoh_done:
-  plp
-  rts
-gi_chip_obj_show:
-  php
-  sep #$20 : .as
-  jsr gi_chip_has
-  bcs gcos_done
-  lda #$13 : sta $212c
-  sta $212d
-gcos_done:
-  plp
-  rts
-
-; -- 16x16 microchip OBJ icon (4 tiles TL,TR,BL,BR, 4bpp) + its 16-colour OBJ palette.
-;    Generated from utils-side ASCII art (canonical IC: body + inner die + pins). idx0 = clear.
-gi_chip_tiles:
-  .byt $00,$00,$04,$00,$04,$00,$00,$00,$00,$0f,$60,$0f,$03,$0f,$03,$0f
-  .byt $00,$00,$00,$00,$00,$00,$1f,$00,$10,$00,$10,$00,$10,$00,$10,$00
-  .byt $00,$00,$90,$00,$90,$00,$00,$00,$00,$f0,$06,$f0,$c0,$f0,$c0,$f0
-  .byt $00,$00,$00,$00,$00,$00,$f8,$00,$08,$00,$08,$00,$08,$00,$08,$00
-  .byt $63,$0f,$03,$0f,$00,$0f,$60,$0f,$00,$00,$04,$00,$04,$00,$00,$00
-  .byt $10,$00,$10,$00,$10,$00,$10,$00,$1f,$00,$00,$00,$00,$00,$00,$00
-  .byt $c6,$f0,$c0,$f0,$00,$f0,$06,$f0,$00,$00,$90,$00,$90,$00,$00,$00
-  .byt $08,$00,$08,$00,$08,$00,$08,$00,$f8,$00,$00,$00,$00,$00,$00,$00
-gi_chip_pal:
-  .word $0000,$1b5f,$2ce5,$72c8,$55ec,$0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000,$0000
-
 ; -- gi_clear_body_buf: zero rows 16..31 of BG1_TILE_BUF and BG2_TILE_BUF (28..31 are
 ;    below the footer -- cleared so the menu's status-bar/clock tiles don't bleed). .as/.xl.
 gi_clear_body_buf:
@@ -1347,7 +1247,7 @@ gcb_loop:
   plp
   .as                          ; CRITICAL: plp restores 8-bit A at runtime, but the
                                ; rep #$30/.al above leaves the ASSEMBLER in .al, which
-                               ; would leak into gi_meta_lbl/gi_meta_val below and size
+                               ; would leak into gi_meta_lbl/gi_meta_pair below and size
                                ; their `lda #imm` as 16-bit (3 bytes) while they run in
                                ; 8-bit -> the stray 3rd byte executes as BRK -> crash.
   rts
@@ -1358,8 +1258,8 @@ gi_puts:
   stx print_src
   jmp hiprint
 
-; gi_meta_lbl: preset print_x/pal/count for a metadata LABEL (the Developer label uses it;
-; the 3-column row sets its own widths inline). .as/.xl declared so the immediates assemble
+; gi_meta_lbl: preset print_x/pal/count for a metadata LABEL (gi_meta_pair uses it; the
+; 3-column row sets its own widths inline). .as/.xl declared so the immediates assemble
 ; 8-bit regardless of any preceding .al directive.
 gi_meta_lbl:
   .as : .xl
@@ -1368,11 +1268,35 @@ gi_meta_lbl:
   lda #14 : sta print_count
   rts
 
+; -- gi_meta_pair: paint one full "label   value" metadata row. The Publisher and Developer
+;    rows have IDENTICAL geometry, so they share this painter rather than each carrying its
+;    own nine setup stores -- this bank has no room for the second copy.
+;    A = row, X = label address, Y = value address.
+;    BANKS ARE IMPLICIT, and that is the one thing to check before adding a third caller:
+;    every value is a field of the $FF staging struct (^GI_DEVELOPER == ^GI_PUBLISHER by
+;    construction), and both labels are LOCALIZED, which makes build_const.py emit them as
+;    dispatch tables in one and the same bank. A label whose translations all collapse to
+;    English becomes a plain string in a DIFFERENT bank instead, and would have to be
+;    printed by the caller. .as/.xl in; A/X/Y clobbered.
+gi_meta_pair:
+  .as : .xl
+  sta print_y
+  phy                        ; hiprint clobbers X/Y -- park the value pointer over the label
+  jsr gi_meta_lbl
+  lda #^text_gi_developer
+  jsr gi_puts
+  lda #GIB_VAL_X : sta print_x
+  lda #$02 : sta print_pal
+  lda #GIB_DEV_VAL_W : sta print_count
+  plx
+  lda #^GI_DEVELOPER
+  jmp gi_puts                ; tail call: gi_puts' rts returns to OUR caller
+
 ; -- gi_draw_desc: wrap GI_DESCRIPTION into rows [gi_desc_top .. gi_desc_rl], first
 ;    skipping gi_desc_skip wrapped lines (Y-mode scroll). gw_trunc still ellipsizes at
 ;    gi_desc_rl when text remains, so the bottom row shows "..." until you scroll to the
 ;    end. gi_desc_top/gi_desc_rl/gi_desc_skip are set by the caller (build_normal sets the
-;    3-line clamp GIB_NORM_DESC_RL; full_redraw sets GIB_DESC_RL). .as/.xl.
+;    2-line clamp GIB_NORM_DESC_RL; full_redraw sets GIB_DESC_RL). .as/.xl.
 gi_draw_desc:
   php
   sep #$20 : .as
@@ -1472,7 +1396,6 @@ gi_desc_full_enter:
   sep #$20 : .as
   rep #$10 : .xl
   jsr snd_fx_confirm
-  jsr gi_chip_obj_hide       ; the chip icon (row 18) would sit over the full text -> drop it
   lda #$01 : sta gi_desc_full
   rep #$20 : .al
   stz gi_desc_scroll
@@ -1498,7 +1421,6 @@ gi_desc_full_exit:
   jsr cover_blank_begin
   jsr gi_dma_body
   jsr cover_blank_end
-  jsr gi_chip_obj_show       ; restore the chip icon on the normal screen
   plp
   rts
 
@@ -1957,18 +1879,10 @@ gi_call_sel_flush:
 
 ; -- rebuild + flush the NORMAL body: the cheap, flash-free way back from the guide picker
 ;    (no band/OAM/palette work, unlike gi_dc_show). Byte-for-byte the same sequence as
-;    gi_desc_full_exit, chip icon included -- the picker hides it for the same reason Y mode
-;    does (it floats over the rows the list occupies). .as/.xl in.
+;    gi_desc_full_exit. .as/.xl in.
 gi_call_body_repaint:
   jsr gi_build_body_normal
   jsr gi_sel_flush
-  jsr gi_chip_obj_show
-  rtl
-
-; -- drop the chip OBJ icon while the guide picker owns rows 17..24 (no-op on the .cov band
-;    path, where gi_chip_has early-outs and OBJ belongs to the cover).
-gi_call_chip_hide:
-  jsr gi_chip_obj_hide
   rtl
 
 gi_call_clear_body:

@@ -71,24 +71,36 @@ module nes_chrsplit_capture(
   input         frame_tick,      // frame close (nes_wrap frame_tick_r)
   input  [8:0]  scanline,        // core scanline
   input  [7:0]  s0_bank,         // chr_snap_s0_bank (registered under ce in mmu.v)
+  input  [7:0]  s1_bank,         // chr_snap_s1_bank  (same tap the 0x12 uses)
   input         s1_present,      // chr_snap_s1_present (8K=0 / 4K=1)
   input  [7:0]  ppumask,         // ppu_tap_ppumask
   output [2:0]  cspl_cnt_o,
   output        cspl_ovf_o,
   output        cspl_poison_o,
   output [31:0] cspl_sl_flat,    // 4 x scanline[7:0]  (window is 0..239 -> 8 bits)
-  output [31:0] cspl_bank_flat   // 4 x s0_bank[7:0]
+  output [63:0] cspl_bank_flat   // 4 x {s1_eff[7:0], s0_bank[7:0]}
 );
   reg [7:0]  cspl_sl [0:3];
-  reg [7:0]  cspl_bk [0:3];
+  reg [15:0] cspl_bk [0:3];
   reg [2:0]  cspl_cnt;
   reg        cspl_ovf;
   reg        cspl_frozen;
   reg        cspl_poison;
   reg [7:0]  cspl_last_sl;    // scanline of the LAST CHANGE (coalesce chain)
-  reg [7:0]  cspl_last_bk;
+  reg [15:0] cspl_last_bk;
   reg        cspl_last_s1p;   // 8K/4K mode baseline for the poison test
-  wire cspl_changed = (s0_bank != cspl_last_bk);
+  // ---- THE KEY IS THE PAIR, not slot 0 alone ----------------------------
+  // A game that raster-splits on the SLOT 1 half was invisible: the change test
+  // only looked at slot 0, so nothing was ever captured and no 0x13 was emitted
+  // for the frame.  Measured: Goemon 1 gains a 0x13 in 561 frames of its
+  // gameplay trace (frame 170 = [(0, 00, 19), (42, 00, 01)] -- s0 IDENTICAL in
+  // both entries), and jajaninpou goes from 5 frames with a 0x13 to 665.
+  // s1 is gated EXACTLY like the 0x12's payload (`s1_present ? s1_bank : 0`),
+  // so a 0x13 entry and a CMD_CHR_STATE payload are the same tuple -- lockstep
+  // with bridge_sim's note_chr_state (`_chr_s1 = s1_bank if s1_present else 0`).
+  wire [7:0]  s1_eff    = s1_present ? s1_bank : 8'd0;
+  wire [15:0] cspl_cur  = {s1_eff, s0_bank};
+  wire cspl_changed = (cspl_cur != cspl_last_bk);
   wire cspl_s1p_chg = (s1_present != cspl_last_s1p);
   // RENDERING GATE (ppumask BG|OBJ): a bank change while rendering is OFF is not
   // a visible CHR split (games re-bank freely in vblank / forced blank; the
@@ -107,16 +119,57 @@ module nes_chrsplit_capture(
   wire cspl_ev1 = (cspl_d1 <= cspl_d2) && (cspl_d1 <= cspl_d3) && (cspl_d1 <= cspl_dn);
   wire cspl_ev2 = !cspl_ev1 && (cspl_d2 <= cspl_d3) && (cspl_d2 <= cspl_dn);
   wire cspl_ev3 = !cspl_ev1 && !cspl_ev2 && (cspl_d3 <= cspl_dn);
+  // ---- REGISTERED DECISION (timing; a 1-CYCLE DEFERRAL, semantically exact) -
+  // Same shape as nes_split_capture / nes_chrwin_capture: the change compare,
+  // the <=1-scanline chain test and the eviction tree pick an ACTION in the ce
+  // cycle; the arrays move the cycle after.  The narrow state (cspl_cnt,
+  // cspl_ovf, cspl_frozen, cspl_poison and the cspl_last_* chain) still updates
+  // in cycle 1 because it feeds the next comparison.  The apply is placed FIRST
+  // so a frame close landing on a pending write comes out in the same order the
+  // immediate module would produce.
+  localparam [2:0] CACT_WR   = 3'd1,
+                   CACT_COAL = 3'd2,
+                   CACT_EV1  = 3'd3,
+                   CACT_EV2  = 3'd4,
+                   CACT_EV3  = 3'd5;
+  reg        cdp_v;
+  reg [2:0]  cdp_act;
+  reg [2:0]  cdp_idx;
+  reg [7:0]  cdp_sl;
+  reg [15:0] cdp_bk;
+
   always @(posedge CLK) begin
+    // ---- cycle 2 of every array update: apply the parked decision -----------
+    if (cdp_v & ~RST) begin
+      cdp_v <= 1'b0;
+      case (cdp_act)
+        CACT_WR:   begin cspl_sl[cdp_idx[1:0]]<=cdp_sl; cspl_bk[cdp_idx[1:0]]<=cdp_bk; end
+        CACT_COAL: begin cspl_bk[cdp_idx[1:0]]<=cdp_bk; end
+        CACT_EV1: begin
+          cspl_sl[1]<=cspl_sl[2]; cspl_bk[1]<=cspl_bk[2];
+          cspl_sl[2]<=cspl_sl[3]; cspl_bk[2]<=cspl_bk[3];
+          cspl_sl[3]<=cdp_sl;     cspl_bk[3]<=cdp_bk;
+        end
+        CACT_EV2: begin
+          cspl_sl[2]<=cspl_sl[3]; cspl_bk[2]<=cspl_bk[3];
+          cspl_sl[3]<=cdp_sl;     cspl_bk[3]<=cdp_bk;
+        end
+        default: begin
+          cspl_sl[3]<=cdp_sl;     cspl_bk[3]<=cdp_bk;
+        end
+      endcase
+    end
+
     if (RST) begin
       cspl_cnt<=3'd1; cspl_ovf<=1'b0; cspl_frozen<=1'b0; cspl_poison<=1'b0;
-      cspl_sl[0]<=8'd0; cspl_bk[0]<=8'd0;
-      cspl_last_sl<=8'd0; cspl_last_bk<=8'd0; cspl_last_s1p<=1'b0;
+      cspl_sl[0]<=8'd0; cspl_bk[0]<=16'd0;
+      cspl_last_sl<=8'd0; cspl_last_bk<=16'd0; cspl_last_s1p<=1'b0;
+      cdp_v<=1'b0; cdp_act<=3'd0; cdp_idx<=3'd0; cdp_sl<=8'd0; cdp_bk<=16'd0;
     end else if (frame_tick) begin
       // re-seed entry0 (fallback = close-time bank) + re-arm capture for next frame
       cspl_frozen<=1'b0; cspl_ovf<=1'b0; cspl_cnt<=3'd1; cspl_poison<=1'b0;
-      cspl_sl[0]<=8'd0; cspl_bk[0]<=s0_bank;
-      cspl_last_sl<=8'd0; cspl_last_bk<=s0_bank; cspl_last_s1p<=s1_present;
+      cspl_sl[0]<=8'd0; cspl_bk[0]<=cspl_cur;
+      cspl_last_sl<=8'd0; cspl_last_bk<=cspl_cur; cspl_last_s1p<=s1_present;
     end else if (ce && scanline <= 9'd239 && !cspl_poison) begin
       if (cspl_frozen && cspl_s1p_chg) begin
         // 8K<->4K mid-display: the captured strips lose their meaning -> drop the
@@ -130,36 +183,32 @@ module nes_chrsplit_capture(
       end else if (cspl_render) begin
       if (!cspl_frozen) begin
         // entry 0 = display-start state (chain anchored at scanline 0)
-        cspl_sl[0]<=8'd0; cspl_bk[0]<=s0_bank;
+        cdp_v<=1'b1; cdp_act<=CACT_WR; cdp_idx<=3'd0;
+        cdp_sl<=8'd0; cdp_bk<=cspl_cur;
         cspl_cnt<=3'd1; cspl_frozen<=1'b1;
-        cspl_last_sl<=8'd0; cspl_last_bk<=s0_bank; cspl_last_s1p<=s1_present;
+        cspl_last_sl<=8'd0; cspl_last_bk<=cspl_cur; cspl_last_s1p<=s1_present;
       end else if (cspl_do_change) begin
         if ((cspl_sl_now - cspl_last_sl) <= 8'd1) begin
           // coalesce (same/adjacent scanline): entry keeps its ORIGINAL
           // scanline; the chain advances so a burst may continue next line
-          cspl_bk[cspl_cnt-3'd1]<=s0_bank;
-          cspl_last_sl<=cspl_sl_now; cspl_last_bk<=s0_bank;
+          cdp_v<=1'b1; cdp_act<=CACT_COAL; cdp_idx<=cspl_cnt-3'd1;
+          cdp_sl<=cspl_sl_now; cdp_bk<=cspl_cur;
+          cspl_last_sl<=cspl_sl_now; cspl_last_bk<=cspl_cur;
         end else if (cspl_cnt >= 3'd4) begin
           cspl_ovf<=1'b1;
-          if (cspl_ev1) begin       // evict e1: shift e2/e3 down, new at [3]
-            cspl_sl[1]<=cspl_sl[2]; cspl_bk[1]<=cspl_bk[2];
-            cspl_sl[2]<=cspl_sl[3]; cspl_bk[2]<=cspl_bk[3];
-            cspl_sl[3]<=cspl_sl_now; cspl_bk[3]<=s0_bank;
-            cspl_last_sl<=cspl_sl_now; cspl_last_bk<=s0_bank;
-          end else if (cspl_ev2) begin
-            cspl_sl[2]<=cspl_sl[3]; cspl_bk[2]<=cspl_bk[3];
-            cspl_sl[3]<=cspl_sl_now; cspl_bk[3]<=s0_bank;
-            cspl_last_sl<=cspl_sl_now; cspl_last_bk<=s0_bank;
-          end else if (cspl_ev3) begin
-            cspl_sl[3]<=cspl_sl_now; cspl_bk[3]<=s0_bank;
-            cspl_last_sl<=cspl_sl_now; cspl_last_bk<=s0_bank;
+          if (cspl_ev1 | cspl_ev2 | cspl_ev3) begin
+            cdp_v<=1'b1;
+            cdp_act<=cspl_ev1 ? CACT_EV1 : (cspl_ev2 ? CACT_EV2 : CACT_EV3);
+            cdp_idx<=3'd3;
+            cdp_sl<=cspl_sl_now; cdp_bk<=cspl_cur;
+            cspl_last_sl<=cspl_sl_now; cspl_last_bk<=cspl_cur;
           end
           // else: the new entry is the shortest strip -> dropped, chain frozen
         end else begin
-          cspl_sl[cspl_cnt]<=cspl_sl_now;
-          cspl_bk[cspl_cnt]<=s0_bank;
+          cdp_v<=1'b1; cdp_act<=CACT_WR; cdp_idx<=cspl_cnt;
+          cdp_sl<=cspl_sl_now; cdp_bk<=cspl_cur;
           cspl_cnt<=cspl_cnt+3'd1;
-          cspl_last_sl<=cspl_sl_now; cspl_last_bk<=s0_bank;
+          cspl_last_sl<=cspl_sl_now; cspl_last_bk<=cspl_cur;
         end
       end
       end // cspl_render

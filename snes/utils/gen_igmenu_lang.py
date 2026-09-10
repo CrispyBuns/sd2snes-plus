@@ -114,7 +114,8 @@ TAB_LABELS = [
     "text_igm_tab_states",   # 1 SAVESTATES
     "text_igm_tab_saves",    # 2 SAVES
     "text_igm_tab_manual",   # 3 GUIDES
-    "text_igm_tab_help",     # 4 HELP
+    "text_igm_tab_trainer",  # 4 TRAINER
+    "text_igm_tab_help",     # 5 HELP -- still off the bar (IGMENU_TABS = 5)
 ]
 
 # The MANUAL tab (Phase 5) strings, IN INDEX ORDER. Lockstep with the IGM_MN_* indices in
@@ -139,16 +140,97 @@ MANUAL_LABELS = [
     "text_igm_mn_slug_other",   # 13 slug 5 -> Other
 ]
 
-# The CHEATS tab strings, IN INDEX ORDER. Unlike the other tabs there is no index enum
-# in snes/igmenu.a65: igm_fill_noname indexes line 0 directly (igm_cheats_tbl[lang]), so
-# a second entry here would need that routine to take a line index first.
+# The CHEATS tab strings, IN INDEX ORDER. Lockstep with the IGM_CH_* indices in
+# snes/igmenu.a65. Line 0 stays first because igm_fill_noname indexes it directly as
+# igm_cheats_tbl[lang] (line 0 is at offset 0 whatever comes after), while line 1 is
+# read through ch_copy/ch_strlen, which do take a line index.
 CHEATS_LABELS = [
     "text_igm_cheat_noname",  # 0 placeholder for a cheat whose YAML carries no name
+    "text_igm_ch_none",       # 1 centered message when the ROM has no cheats at all
 ]
 
 # The placeholder is copied into OVL_NONAME_BUF (32 B, see memmap.i65) and drawn in the
-# list's name column; cap it well inside both.
-CHEATS_LABEL_MAX = {"text_igm_cheat_noname": 24}
+# list's name column; cap it well inside both. The empty-list message is centered on a
+# 64-column row by ch_draw_centered, so it only needs to stay well short of that.
+CHEATS_LABEL_MAX = {"text_igm_cheat_noname": 24, "text_igm_ch_none": 40}
+
+# Shell chrome shared by every tab, IN INDEX ORDER. Lockstep with the IGM_SH_* indices
+# in snes/igmenu.a65. These were hard-coded ASCII in igmenu.a65 until the Russian
+# translation landed: a Cyrillic menu with a Latin footer reads as broken, so the
+# "Cheats stays English" convention gets an explicit exception for the in-game chrome.
+SHELL_LABELS = [
+    "text_igm_ft_tab",        # 0 footer, tab-bar focus
+    "text_igm_ft_cheats",     # 1 footer, CHEATS content focus
+    "text_igm_ft_generic",    # 2 footer, any other content focus
+    "text_igm_master_on",     # 3 master cheat switch, enabled
+    "text_igm_master_off",    # 4 master cheat switch, disabled
+]
+
+# All five are centered on a 64-column row by sh_draw_centered, so the only real
+# limit is the row itself; keep a margin so a long translation cannot touch the edges.
+SHELL_LABEL_MAX = {lbl: 56 for lbl in SHELL_LABELS}
+
+# The TRAINER tab strings, IN INDEX ORDER. Lockstep with the IGM_TR_* indices in
+# snes/trainer.i65 (SAME count + order) and with the EN base labels in const.a65.
+TRAINER_LABELS = [
+    "text_igm_tr_title",        # 0  window title (centered)
+    "text_igm_tr_searchtype",   # 1  field label
+    "text_igm_tr_datatype",     # 2  field label
+    "text_igm_tr_value",        # 3  field label
+    "text_igm_tr_candidates",   # 4  field label
+    "text_igm_tr_compare",      # 5  field label
+    "text_igm_tr_exact",        # 6  search type value
+    "text_igm_tr_unknown",      # 7  search type value
+    "text_igm_tr_8bit",         # 8  data type value
+    "text_igm_tr_16bit",        # 9  data type value
+    "text_igm_tr_eq",           # 10 compare value -- ORDER IS TR_MODE_EQ..TR_MODE_LT
+    "text_igm_tr_ne",           # 11
+    "text_igm_tr_changed",      # 12
+    "text_igm_tr_unchanged",    # 13
+    "text_igm_tr_increased",    # 14
+    "text_igm_tr_decreased",    # 15
+    "text_igm_tr_gt",           # 16
+    "text_igm_tr_lt",           # 17
+    "text_igm_tr_newsearch",    # 18 action
+    "text_igm_tr_filter",       # 19 action
+    "text_igm_tr_results",      # 20 action
+    "text_igm_tr_reset",        # 21 action
+    "text_igm_tr_address",      # 22 detail label
+    "text_igm_tr_current",      # 23 detail label
+    "text_igm_tr_setvalue",     # 24 action
+    "text_igm_tr_freeze",       # 25 action
+    "text_igm_tr_unfreeze",     # 26 action
+    "text_igm_tr_addcheat",     # 27 action
+    "text_igm_tr_frozen",       # 28 status token
+    "text_igm_tr_searching",    # 29 message (centered)
+    "text_igm_tr_noresults",    # 30 message (centered)
+    "text_igm_tr_toomany",      # 31 message (centered)
+    "text_igm_tr_dropped_ss",   # 32 message (centered)
+    "text_igm_tr_dropped_rst",  # 33 message (centered)
+    "text_igm_tr_nofreeze",     # 34 message (centered)
+    "text_igm_tr_hint_setup",   # 35 footer hint (centered)
+    "text_igm_tr_hint_edit",    # 36 footer hint (centered)
+    "text_igm_tr_hint_list",    # 37 footer hint (centered)
+    "text_igm_tr_master_off",  # 38 warning: a freeze exists but the master switch is off
+]
+
+# The TRAINER body is a 36-column window (ig_frame_geom x=13 w=38 -> interior cols 14..49):
+# labels start at col 16 and their values at col 34, so a label may not exceed 16 columns
+# and a value 14, or the two collide. Actions and messages are centered inside the interior.
+TRAINER_LABEL_MAX = {
+    "text_igm_tr_searchtype": 16, "text_igm_tr_datatype": 16, "text_igm_tr_value": 16,
+    "text_igm_tr_candidates": 16, "text_igm_tr_compare": 16,
+    "text_igm_tr_exact": 14, "text_igm_tr_unknown": 14,
+    "text_igm_tr_8bit": 14, "text_igm_tr_16bit": 14,
+    "text_igm_tr_eq": 14, "text_igm_tr_ne": 14, "text_igm_tr_changed": 14,
+    "text_igm_tr_unchanged": 14, "text_igm_tr_increased": 14, "text_igm_tr_decreased": 14,
+    "text_igm_tr_gt": 14, "text_igm_tr_lt": 14,
+    "text_igm_tr_newsearch": 22, "text_igm_tr_filter": 22, "text_igm_tr_results": 22,
+    "text_igm_tr_reset": 22, "text_igm_tr_setvalue": 22, "text_igm_tr_freeze": 22,
+    "text_igm_tr_unfreeze": 22, "text_igm_tr_addcheat": 22,
+    "text_igm_tr_address": 14, "text_igm_tr_current": 14, "text_igm_tr_frozen": 14,
+}
+TRAINER_MSG_MAX = 36   # centered lines inside the 36-column interior
 
 # The tab bar centers each label in a 10-column field (IGM_TAB_FIELD in igmenu.a65), so
 # every translated tab label must stay <= 10 encoded columns; guard it here.
@@ -163,6 +245,12 @@ def cap_for(label):
         return SAVES_LABEL_MAX[label]
     if label in CHEATS_LABEL_MAX:
         return CHEATS_LABEL_MAX[label]
+    if label in SHELL_LABEL_MAX:
+        return SHELL_LABEL_MAX[label]
+    if label in TRAINER_LABEL_MAX:
+        return TRAINER_LABEL_MAX[label]
+    if label in TRAINER_LABELS:
+        return TRAINER_MSG_MAX
     return STATES_LABEL_MAX.get(label, IGM_WIDTH_MAX)
 
 
@@ -203,7 +291,7 @@ def main():
         for lbl in sorted(dl - const_labels):
             problems.append(f"{lbl}: in lang_{name}.py but not in {base.name}")
     for lbl in (HELP_LABELS + STATES_LABELS + SAVES_LABELS + TAB_LABELS + MANUAL_LABELS
-                + CHEATS_LABELS):
+                + CHEATS_LABELS + TRAINER_LABELS):
         if lbl not in en_args:
             problems.append(f"{lbl}: listed in a *_LABELS table but not in {base.name}")
     if problems:
@@ -287,6 +375,7 @@ def main():
         f"#define IGM_TAB_NLINES {len(TAB_LABELS)}",
         f"#define IGM_MANUAL_NLINES {len(MANUAL_LABELS)}",
         f"#define IGM_CHEATS_NLINES {len(CHEATS_LABELS)}",
+        f"#define IGM_TRAINER_NLINES {len(TRAINER_LABELS)}",
         f"#define IGM_LANG_COUNT {nlang}",
         f"#define IGM_LANG_STRIDE {IGM_LANG_STRIDE}",
         f"#define IGM_LANG_SHIFT {IGM_LANG_SHIFT}",
@@ -298,11 +387,13 @@ def main():
     out += emit_table("igm_tab_tbl", "igm_tb", TAB_LABELS)
     out += emit_table("igm_manual_tbl", "igm_mn", MANUAL_LABELS)
     out += emit_table("igm_cheats_tbl", "igm_ch", CHEATS_LABELS)
+    out += emit_table("igm_shell_tbl", "igm_sh", SHELL_LABELS)
+    out += emit_table("igm_trainer_tbl", "igm_tr", TRAINER_LABELS)
 
     out_path.write_text("\n".join(out) + "\n")
     print(f"generated {out_path}: HELP {len(HELP_LABELS)} + STATES {len(STATES_LABELS)} "
           f"+ SAVES {len(SAVES_LABELS)} + TAB {len(TAB_LABELS)} + MANUAL {len(MANUAL_LABELS)} "
-          f"+ CHEATS {len(CHEATS_LABELS)} "
+          f"+ CHEATS {len(CHEATS_LABELS)} + TRAINER {len(TRAINER_LABELS)} "
           f"lines x {nlang} langs ({', '.join(lang_order)})")
 
 

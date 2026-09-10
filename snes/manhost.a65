@@ -201,7 +201,24 @@ mhg_loop:
 	- lda @$004212 : and #$01 : beq -          ; auto-joypad read START (bit0 set)
 	- lda @$004212 : and #$01 : bne -          ; auto-joypad read DONE (bit0 clear)
 	rep #$20 : .al
+	; Merge BOTH controllers, the same way read_pad (snes/pad.a65) does it for the rest of
+	; the menu -- the guide picker right before this loop already answers to controller 2,
+	; and the viewer must not be the one place where it stops working.  The low nibble of
+	; $4218/$421a is the controller ID and reads 0 only for a standard pad: a non-zero nibble
+	; means a non-standard controller, and what the mask leaves behind carries no button bits,
+	; so ORing it in contributes nothing instead of injecting phantom presses.
 	lda @$004218
+	and #$000f
+	bne mhg_pad1_id
+	lda @$004218
+mhg_pad1_id:
+	sta @man_pad_cur
+	lda @$00421a
+	and #$000f
+	bne mhg_pad2_id
+	lda @$00421a
+mhg_pad2_id:
+	ora @man_pad_cur
 	sta @man_pad_cur
 	eor @man_pad_prev
 	and @man_pad_cur                           ; (cur ^ prev) & cur = newly pressed
@@ -242,8 +259,8 @@ mhg_prst:
 	cpx #$0004
 	bne mhg_prst
 	jsl @gi_call_query
-	; (d) OBSEL: the viewer repointed the OBJ name base ($2101) and only the .cov / chip-icon
-	;     paths inside gi_dc_show rewrite it -- a ficha with neither would keep the viewer's.
+	; (d) OBSEL: the viewer repointed the OBJ name base ($2101) and only the .cov path inside
+	;     gi_dc_show rewrites it -- a ficha without a cover would keep the viewer's.
 	sep #$20 : .as
 	lda #COVER_OBSEL : sta @$002101
 	; (e) NMI back on BEFORE anything can wait on isr_done -- gin_syncread does, and the
@@ -276,9 +293,6 @@ mh_select:
 	php
 	sep #$20 : .as
 	rep #$10 : .xl
-	jsl @gi_call_chip_hide                     ; the 16x16 chip OBJ sits on rows 19-20, i.e. over
-	                                            ;   the list -- drop it exactly like Y mode does
-	                                            ;   (no-op on the .cov band path)
 	jsr mh_sel_draw
 mhs_loop:
 	jsl @gi_call_syncread

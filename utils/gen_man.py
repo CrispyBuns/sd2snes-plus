@@ -135,7 +135,7 @@ from snesgfx import (encode_tile_8bpp, decode_tile_8bpp,
 # now the .man title). Import, never reimplement/duplicate this table.
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                  "..", "snes", "utils"))
-from build_const import ACCENTS, DECODE
+from build_const import ENCODE, DECODE
 
 PAGE_W      = 256
 BAND_H      = 224
@@ -240,23 +240,26 @@ assert ZROW_BYTES % SECTOR == 0 and ZPAL_BYTES <= ZPAL_STRIDE
 # ---------------------------------------------------------------- title font encode ----
 def font_encode_title(text):
     """UTF-8 text -> up to TITLE_BYTES-1 font-code bytes, NUL-padded to TITLE_BYTES.
-    ASCII passthrough + the canonical ACCENTS map (imported from build_const.py --
-    NOT reimplemented here). A character with no font mapping is a hard error
-    (guard): silently dropping it would ship a title with an invisible hole,
-    indistinguishable from truncation."""
+    ASCII passthrough + the canonical ENCODE map (ACCENTS plus the Cyrillic
+    homoglyphs, imported from build_const.py -- NOT reimplemented here). A
+    character with no font mapping is a hard error (guard): silently dropping it
+    would ship a title with an invisible hole, indistinguishable from
+    truncation. Encoding reads ENCODE, decoding reads DECODE, which is keyed on
+    ACCENTS alone -- a homoglyph shares its code with another character, so the
+    round trip hands back that character (a Cyrillic 'о' decodes as Latin 'o')."""
     out = bytearray()
     truncated = False
     for ch in text:
         if len(out) >= TITLE_BYTES - 1:
             truncated = True
             break
-        if ch in ACCENTS:
-            out.append(ACCENTS[ch])
+        if ch in ENCODE:
+            out.append(ENCODE[ch])
         elif 0x20 <= ord(ch) < 0x7f:
             out.append(ord(ch))
         else:
             raise SystemExit(f"--title: character {ch!r} (U+{ord(ch):04X}) has no font "
-                              f"mapping (see snes/utils/build_const.py ACCENTS)")
+                              f"mapping (see snes/utils/build_const.py ENCODE)")
     if truncated:
         print(f"warning: title truncated to {TITLE_BYTES - 1} glyphs: {text!r}", file=sys.stderr)
     out += b"\x00" * (TITLE_BYTES - len(out))

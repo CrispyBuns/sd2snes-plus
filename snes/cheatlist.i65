@@ -642,89 +642,14 @@ ss_ovl_dflag_on:
 	plp
 	rts
 
-// ---- "NO CHEATS" centered on row 13 ----
-ss_ovl_draw_empty:
-	php
-	phb
-	sep #$20 : .as
-	lda #$f4 : pha : plb
-	rep #$30 : .al : .xl
-	jsr ovl_row_clear
-	sep #$20 : .as
-	ldx #27                                 // (64-9)/2 for "NO CHEATS"
-	lda #$4e : sta OVL_RB, x : inx          // N
-	lda #$4f : sta OVL_RB, x : inx          // O
-	lda #$20 : sta OVL_RB, x : inx          // (space)
-	lda #$43 : sta OVL_RB, x : inx          // C
-	lda #$48 : sta OVL_RB, x : inx          // H
-	lda #$45 : sta OVL_RB, x : inx          // E
-	lda #$41 : sta OVL_RB, x : inx          // A
-	lda #$54 : sta OVL_RB, x : inx          // T
-	lda #$53 : sta OVL_RB, x                // S
-	rep #$30 : .al : .xl
-	ldx #$000d                              // absolute tile row 13
-	jsr ovl_flush_abs
-	plb
-	plp
-	rts
+// ss_ovl_draw_empty ("no cheats") moved to igmenu.a65: it is now LOCALIZED, and a
+// localized string has to be read out of igm_cheats_tbl in bank $C8 -- which this file
+// cannot do, being shared source that also assembles into the $C1 overlay host.
+// ss_ovl_draw_title (a hard-coded "CHEATS" on row 1) is gone with the fail-safe: the
+// shell covers that row with the tab bar, so only the removed single-tab path drew it.
 
-// ---- title "CHEATS" centered on row 1 ----
-ss_ovl_draw_title:
-	php
-	phb
-	sep #$20 : .as
-	lda #$f4 : pha : plb
-	rep #$30 : .al : .xl
-	jsr ovl_row_clear
-	sep #$20 : .as
-	ldx #29                                 // (64-6)/2 for "CHEATS"
-	lda #$43 : sta OVL_RB, x : inx          // C
-	lda #$48 : sta OVL_RB, x : inx          // H
-	lda #$45 : sta OVL_RB, x : inx          // E
-	lda #$41 : sta OVL_RB, x : inx          // A
-	lda #$54 : sta OVL_RB, x : inx          // T
-	lda #$53 : sta OVL_RB, x                // S
-	rep #$30 : .al : .xl
-	ldx #$0001                              // absolute tile row 1
-	jsr ovl_flush_abs
-	plb
-	plp
-	rts
-
-// ---- footer hint "A:ON/OFF  B:BACK" centered on row 25 ----
-ss_ovl_draw_footer:
-	php
-	phb
-	sep #$20 : .as
-	lda #$f4 : pha : plb
-	rep #$30 : .al : .xl
-	jsr ovl_row_clear
-	sep #$20 : .as
-	ldx #24                                 // (64-16)/2 for "A:ON/OFF  B:BACK"
-	lda #$41 : sta OVL_RB, x : inx          // A
-	lda #$3a : sta OVL_RB, x : inx          // :
-	lda #$4f : sta OVL_RB, x : inx          // O
-	lda #$4e : sta OVL_RB, x : inx          // N
-	lda #$2f : sta OVL_RB, x : inx          // /
-	lda #$4f : sta OVL_RB, x : inx          // O
-	lda #$46 : sta OVL_RB, x : inx          // F
-	lda #$46 : sta OVL_RB, x : inx          // F
-	lda #$20 : sta OVL_RB, x : inx          // (space)
-	lda #$20 : sta OVL_RB, x : inx          // (space)
-	lda #$42 : sta OVL_RB, x : inx          // B
-	lda #$3a : sta OVL_RB, x : inx          // :
-	lda #$42 : sta OVL_RB, x : inx          // B
-	lda #$41 : sta OVL_RB, x : inx          // A
-	lda #$43 : sta OVL_RB, x : inx          // C
-	lda #$4b : sta OVL_RB, x                // K
-	rep #$30 : .al : .xl
-	ldx #$0019                              // absolute tile row 25
-	jsr ovl_flush_abs
-	plb
-	plp
-	rts
-
-
+// The fail-safe footer ("A:ON/OFF  B:BACK", hard-coded ASCII on row 25) went with the
+// fail-safe: the shell paints its own footer there, per focus level and per tab.
 // ---- sliding name window: CHEAT_NAMES holds only CHEAT_OVL_MAX (64) names, for the absolute
 //      range [CHEAT_WIN_BASE, +64). If the current visible span leaves that window, ask the MCU
 //      (CMD_CHEAT_NAMES_WINDOW) to restage a re-centred window from the $D00000 records and spin
@@ -1103,6 +1028,5 @@ ss_ovl_nv_done:
 	plp
 	rts
 
-// (ss_ovl_draw_title / ss_ovl_draw_footer are defined above, next to the row
-//  builders, since they use the same OVL_RB build+flush path.)
+
 

@@ -422,6 +422,20 @@ menu_enttab_browser:
  .byt  0,0,0
 
  .byt  MTYPE_VALUE
+ .word !mtext_browser_menumusic_random
+ .byt  ^mtext_browser_menumusic_random
+ .word !kv_onoff
+ .byt  ^kv_onoff
+ .byt  OPTTYPE_KVBYTE
+ .word !CFG_MENU_MUSIC_RANDOM
+ .byt  ^CFG_MENU_MUSIC_RANDOM
+ .word !mdesc_browser_menumusic_random
+ .byt  ^mdesc_browser_menumusic_random
+ .byt  0,0,0
+ .byt  0,0,0
+ .byt  0,0,0
+
+ .byt  MTYPE_VALUE
  .word !mtext_browser_menusfx
  .byt  ^mtext_browser_menusfx
  .word !kv_onoff
@@ -431,6 +445,34 @@ menu_enttab_browser:
  .byt  ^CFG_ENABLE_MENU_SFX
  .word !mdesc_browser_menusfx
  .byt  ^mdesc_browser_menusfx
+ .byt  0,0,0
+ .byt  0,0,0
+ .byt  0,0,0
+
+ .byt  MTYPE_VALUE
+ .word !mtext_browser_text_outline
+ .byt  ^mtext_browser_text_outline
+ .word !kv_text_edge
+ .byt  ^kv_text_edge
+ .byt  OPTTYPE_KVBYTE
+ .word !CFG_TEXT_OUTLINE
+ .byt  ^CFG_TEXT_OUTLINE
+ .word !mdesc_browser_text_outline
+ .byt  ^mdesc_browser_text_outline
+ .byt  0,0,0
+ .byt  0,0,0
+ .byt  0,0,0
+
+ .byt  MTYPE_VALUE
+ .word !mtext_browser_text_aa
+ .byt  ^mtext_browser_text_aa
+ .word !kv_text_edge
+ .byt  ^kv_text_edge
+ .byt  OPTTYPE_KVBYTE
+ .word !CFG_TEXT_ANTIALIAS
+ .byt  ^CFG_TEXT_ANTIALIAS
+ .word !mdesc_browser_text_aa
+ .byt  ^mdesc_browser_text_aa
  .byt  0,0,0
  .byt  0,0,0
  .byt  0,0,0
@@ -472,6 +514,20 @@ menu_enttab_browser:
  .byt  ^CFG_SORT_FAVORITES
  .word !mdesc_browser_sortfav
  .byt  ^mdesc_browser_sortfav
+ .byt  0,0,0
+ .byt  0,0,0
+ .byt  0,0,0
+
+ .byt  MTYPE_VALUE
+ .word !mtext_cfg_ask_clock
+ .byt  ^mtext_cfg_ask_clock
+ .word !kv_onoff
+ .byt  ^kv_onoff
+ .byt  OPTTYPE_KVBYTE
+ .word !CFG_ASK_CLOCK_ON_BOOT
+ .byt  ^CFG_ASK_CLOCK_ON_BOOT
+ .word !mdesc_cfg_ask_clock
+ .byt  ^mdesc_cfg_ask_clock
  .byt  0,0,0
  .byt  0,0,0
  .byt  0,0,0
@@ -1176,168 +1232,15 @@ mfunc_chg_language:
   sta @cur_lang
   rtl
 
-kv_language:
-.word $0000, !text_lang_en : .byt ^text_lang_en
-.word $0001, !text_lang_ptbr : .byt ^text_lang_ptbr
-.word $0002, !text_lang_es : .byt ^text_lang_es
-.word $0003, !text_lang_de : .byt ^text_lang_de
-.word $0004, !text_lang_fr : .byt ^text_lang_fr
-.word $0005, !text_lang_it : .byt ^text_lang_it
-.word $ffff
-
-kv_bsx_timesource:
-.word $0000, !text_rtc : .byt ^text_rtc
-.word $0001, !text_custom : .byt ^text_custom
-.word $ffff
-
-kv_onoff:
-.word $0000, !text_off : .byt ^text_off
-.word $0001, !text_on : .byt ^text_on
-.word $ffff
-
-; Copier-header convention of one IPS patch, edited through PATCH_HDR_SEL.
-; Values match PATCH_HDR_AUTO/HEADERED/HEADERLESS >> PATCH_FLAG_HDR_SHIFT.
-kv_patch_hdrmode:
-.word $0000, !text_patch_hdrsel_auto : .byt ^text_patch_hdrsel_auto
-.word $0001, !text_patch_hdrsel_on : .byt ^text_patch_hdrsel_on
-.word $0002, !text_patch_hdrsel_off : .byt ^text_patch_hdrsel_off
-.word $ffff
-
-; cover size: 1=large (legacy "on"), 2=small (half, 8x8 sprites), 0=off. Cycle
-; order large->small->off; CFG default is 1 so an existing "ShowCovers: true"
-; config (parsed to 1) shows "Large".
-kv_cover_size:
-.word $0001, !text_cover_large : .byt ^text_cover_large
-.word $0002, !text_cover_small : .byt ^text_cover_small
-.word $0000, !text_off : .byt ^text_off
-.word $ffff
-
-; ShowGameInfo is tri-state: 0 = off, 1 = on (auto-show before boot), 2 = context
-; (no auto-show; the info screen is reachable from the file context menu instead).
-; Listed in NUMERIC order, unlike kv_cover_size above: that one is reordered so the
-; "value not in the table -> fall back to the first row" sanitize lands on a sane
-; default, but here cfg_load clamps ShowGameInfo into 0..2, so every stored value is
-; always present in the table and that fallback is unreachable. With nothing to gain
-; from reordering, keep the shape of kv_onoff / kv_patch_hdrmode and let the scroll
-; order read Off -> On -> Context.
-kv_gameinfo_mode:
-.word $0000, !text_off : .byt ^text_off
-.word $0001, !text_on : .byt ^text_on
-.word $0002, !text_gameinfo_context : .byt ^text_gameinfo_context
-.word $ffff
-
-kv_rst_to_menu:
-.word $0000, !text_off : .byt ^text_off
-.word $0001, !text_on : .byt ^text_on
-.word $0002, !text_nav_folder : .byt ^text_nav_folder
-.word $0003, !text_nav_rom : .byt ^text_nav_rom
-.word $ffff
-
-kv_enabledisable:
-.word $0000, !text_enabled : .byt ^text_enabled
-.word $0001, !text_disabled : .byt ^text_disabled
-.word $ffff
-
-kv_yesno:
-.word $0000, !text_no : .byt ^text_no
-.word $0001, !text_yes : .byt ^text_yes
-.word $ffff
-
-kv_vmode:
-.word $0002, !text_auto : .byt ^text_auto
-kv_vmode_noauto:
-.word $0001, !text_50Hz : .byt ^text_50Hz
-.word $0000, !text_60Hz : .byt ^text_60Hz
-.word $ffff
-
-kv_cx4_speed:
-.word $0000, !text_normal : .byt ^text_normal
-.word $0001, !text_fast : .byt ^text_fast
-.word $ffff
-
-kv_gsu_speed:
-.word $0000, !text_normal : .byt ^text_normal
-.word $0001, !text_fast : .byt ^text_fast
-.word $ffff
-
-; Atari 2600 picture width, shipped to the core as feat16[5]: 0 = the native
-; 160 px TIA raster 1:1 (pillarboxed), 1 = 256 px (5 source pixels stretched to
-; 8) filling the screen. cfg_load clamps A26VideoWidth into 0..1, so the
-; "value not in the table -> first row" fallback is unreachable; numeric order.
-kv_a26_width:
-.word $0000, !text_a26_w160 : .byt ^text_a26_w160
-.word $0001, !text_a26_w256 : .byt ^text_a26_w256
-.word $ffff
-
-kv_sgb_clock:
-.word $0000, !text_sgb_clock1 : .byt ^text_sgb_clock1
-.word $0001, !text_sgb_clock2 : .byt ^text_sgb_clock2
-.word $ffff
-
-kv_screensaver_timeout:
-.word $0001, !text_1min : .byt ^text_1min
-.word $0002, !text_2min : .byt ^text_2min
-.word $0003, !text_3min : .byt ^text_3min
-.word $0004, !text_4min : .byt ^text_4min
-.word $0005, !text_5min : .byt ^text_5min
-.word $000a, !text_10min : .byt ^text_10min
-.word $000f, !text_15min : .byt ^text_15min
-.word $0014, !text_20min : .byt ^text_20min
-.word $001e, !text_30min : .byt ^text_30min
-.word $002d, !text_45min : .byt ^text_45min
-.word $003c, !text_60min : .byt ^text_60min
-.word $ffff
-
-kv_volume_boost:
-.word $0000, !text_off : .byt ^text_off
-.word $0001, !text_3_5db : .byt ^text_3_5db
-.word $0002, !text_6db : .byt ^text_6db
-.word $0003, !text_9_5db : .byt ^text_9_5db
-.word $0004, !text_12db : .byt ^text_12db
-.word $ffff
-
-kv_bright_limit:
-.word $0008, !text_minus7 : .byt ^text_minus7
-.word $0009, !text_minus6 : .byt ^text_minus6
-.word $000a, !text_minus5 : .byt ^text_minus5
-.word $000b, !text_minus4 : .byt ^text_minus4
-.word $000c, !text_minus3 : .byt ^text_minus3
-.word $000d, !text_minus2 : .byt ^text_minus2
-.word $000e, !text_minus1 : .byt ^text_minus1
-.word $000f, !text_off : .byt ^text_off
-.word $ffff
-
-kv_savestates:
-.word $0000, !text_off : .byt ^text_off
-.word $0001, !text_on : .byt ^text_on
-;.word $0001, !text_on_p1 : .byt ^text_on_p1
-;.word $0002, !text_on_p2 : .byt ^text_on_p2
-.word $ffff
-
-opt_0_to_30:
-.word $0000, $001E
-
-opt_1_to_2:
-.word $0001, $0002
-
-kv_led_bright:
-.word $0000, !text_off : .byt ^text_off
-.word $0001, !text_1 : .byt ^text_1
-.word $0002, !text_2 : .byt ^text_2
-.word $0003, !text_3 : .byt ^text_3
-.word $0004, !text_4 : .byt ^text_4
-.word $0005, !text_5 : .byt ^text_5
-.word $0006, !text_6 : .byt ^text_6
-.word $0007, !text_7 : .byt ^text_7
-.word $0008, !text_8 : .byt ^text_8
-.word $0009, !text_9 : .byt ^text_9
-.word $000a, !text_10 : .byt ^text_10
-.word $000b, !text_11 : .byt ^text_11
-.word $000c, !text_12 : .byt ^text_12
-.word $000d, !text_13 : .byt ^text_13
-.word $000e, !text_14 : .byt ^text_14
-.word $000f, !text_15_max : .byt ^text_15_max
-.word $ffff
+; ======================================================================
+;  The kv_* value tables moved to snes/contextdata.a65 ($C1).  They are pure
+;  data (~600 bytes of them) and both readers of a kv table are bank-explicit:
+;  menu_edit_value loads the entry's bank byte into w_kvtab_bank and does
+;  `pha : plb` before jsr menu_kv_lookup (menu.a65), and menu_value_dialog_kv8
+;  does the same from w_preset_bank -- so a table is free to live outside $C0.
+;  Moved for the usual reason (see menu_enttab_mm / menu_enttab_chip there):
+;  $C0 is the page that runs out, $C1 has tens of KB free.
+; ======================================================================
 
 menu_enttab_test:
 ; HEADER

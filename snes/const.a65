@@ -208,6 +208,7 @@ text_lang_es                      .byt "Espa", 154, "ol", 0
 text_lang_de                      .byt "Deutsch", 0
 text_lang_fr                      .byt "Fran", 141, "ais", 0
 text_lang_it                      .byt "Italiano", 0
+text_lang_ru                      .byt 80, 121, 99, 99, 207, 205, 206, 0
 ; ---- In-game TAB menu HELP tab (Phase 2). These are the ENGLISH base; the
 ;      per-language dicts (utils/lang_*.py) carry the translations. build_const.py
 ;      pools them into bank $C1 (the menu never renders them), and the SEPARATE
@@ -251,6 +252,7 @@ text_igm_tab_states               .byt "SAVESTATES", 0
 text_igm_tab_saves                .byt "SAVES", 0
 text_igm_tab_help                 .byt "HELP", 0
 text_igm_tab_manual               .byt "GUIDES", 0
+text_igm_tab_trainer              .byt "TRAINER", 0
 ; ---- In-game TAB menu SAVES tab (Phase 4, status-only). ENGLISH base; per-language dicts
 ;      carry the translations. gen_igmenu_lang.py re-reads THESE + the dicts to emit
 ;      igm_saves_tbl in igmenu_lang.i65 ($C2), read by igmenu.a65's SAVES tab. Lockstep
@@ -294,7 +296,54 @@ text_igm_mn_slug_guide            .byt "Guide", 0
 text_igm_mn_slug_map              .byt "Map", 0
 text_igm_mn_slug_insert           .byt "Insert", 0
 text_igm_mn_slug_other            .byt "Other", 0
+; ---- In-game TAB menu TRAINER tab (RAM search). ENGLISH base; per-language dicts carry
+;      the translations. gen_igmenu_lang.py re-reads THESE + the dicts to emit
+;      igm_trainer_tbl in igmenu_lang.i65 (bank $C8), read by snes/trainer.i65.
+;      Lockstep with TRAINER_LABELS + the IGM_TR_* indices in trainer.i65 (same count
+;      + order). The tab body is a 36-column window (frame x=13 w=38), so field labels
+;      are capped at 16 encoded cols and their values at 14 (they never collide);
+;      actions at 22 and centered messages at 36 -- all guarded in gen_igmenu_lang.py.
+text_igm_tr_title                .byt "RAM TRAINER", 0
+text_igm_tr_searchtype           .byt "Search type:", 0
+text_igm_tr_datatype             .byt "Data type:", 0
+text_igm_tr_value                .byt "Value:", 0
+text_igm_tr_candidates           .byt "Candidates:", 0
+text_igm_tr_compare              .byt "Compare:", 0
+text_igm_tr_exact                .byt "Exact value", 0
+text_igm_tr_unknown              .byt "Unknown", 0
+text_igm_tr_8bit                 .byt "8-bit", 0
+text_igm_tr_16bit                .byt "16-bit", 0
+text_igm_tr_eq                   .byt "Equal to", 0
+text_igm_tr_ne                   .byt "Not equal", 0
+text_igm_tr_changed              .byt "Changed", 0
+text_igm_tr_unchanged            .byt "Unchanged", 0
+text_igm_tr_increased            .byt "Increased", 0
+text_igm_tr_decreased            .byt "Decreased", 0
+text_igm_tr_gt                   .byt "Greater than", 0
+text_igm_tr_lt                   .byt "Less than", 0
+text_igm_tr_newsearch            .byt "NEW SEARCH", 0
+text_igm_tr_filter               .byt "FILTER", 0
+text_igm_tr_results              .byt "RESULTS", 0
+text_igm_tr_reset                .byt "RESET SEARCH", 0
+text_igm_tr_address              .byt "ADDRESS", 0
+text_igm_tr_current              .byt "CURRENT", 0
+text_igm_tr_setvalue             .byt "SET VALUE", 0
+text_igm_tr_freeze               .byt "FREEZE", 0
+text_igm_tr_unfreeze             .byt "UNFREEZE", 0
+text_igm_tr_addcheat             .byt "ADD TO CHEATS", 0
+text_igm_tr_frozen               .byt "FROZEN", 0
+text_igm_tr_searching            .byt "Searching...", 0
+text_igm_tr_noresults            .byt "No results left", 0
+text_igm_tr_toomany              .byt "Too many results - filter again", 0
+text_igm_tr_dropped_ss           .byt "Search reset - savestate loaded", 0
+text_igm_tr_dropped_rst          .byt "Search reset - console reset", 0
+text_igm_tr_nofreeze             .byt "No free cheat slot", 0
+text_igm_tr_hint_setup           .byt "A: select   D-Pad: change", 0
+text_igm_tr_hint_edit            .byt "D-Pad: edit   A: OK   B: cancel", 0
+text_igm_tr_hint_list            .byt "A: inspect   B: back", 0
+text_igm_tr_master_off           .byt "Cheats master is OFF", 0
 mtext_cfg_time                    .byt "Set Clock", 0
+mtext_cfg_ask_clock               .byt "Ask for clock on boot", 0
 mtext_cfg_bsx                     .byt "BS-X Settings", 0
 mtext_cfg_browser                 .byt "Browser Settings", 0
 mtext_cfg_chip                    .byt "Chip Options", 0
@@ -319,7 +368,10 @@ mtext_cfg_patch                   .byt "Patch Options", 0
 mtext_patch_verify                .byt "Verify Integrity (~23s)", 0
 mtext_patch_clearppu              .byt "Clear PPU on Boot", 0
 mtext_browser_menumusic           .byt "Menu music", 0
+mtext_browser_menumusic_random    .byt " ", 129, "Random music", 0
 mtext_browser_menusfx             .byt "Menu sounds", 0
+mtext_browser_text_outline        .byt "Text outline", 0
+mtext_browser_text_aa             .byt "Text anti-aliasing", 0
 mtext_browser_sortfav             .byt "Sort favorites", 0
 mtext_browser_gameinfo            .byt "Game Info", 0
 mtext_gameinfo_enable             .byt "Show info screen", 0
@@ -364,6 +416,7 @@ mdesc_mm_sysinfo                  .byt "Info about FW version, SD Card, SNES, CI
 mdesc_mm_memtest                  .byt "Checks the FPGA-to-RAM address and data lines for breaks and shorts (10 s). A full test also verifies every cell (30 s). Resets the console.", 0
 mdesc_mm_language                 .byt "Set the menu/firmware language", 0
 mdesc_cfg_time                    .byt "Set the date and time", 0
+mdesc_cfg_ask_clock               .byt "Ask for the time at startup while the clock is unset", 0
 mdesc_cfg_bsx                     .byt "BS-X/Satellaview specific settings", 0
 mdesc_cfg_browser                 .byt "Change file browser settings", 0
 mdesc_cfg_chip                    .byt "Set special chip features", 0
@@ -397,8 +450,11 @@ mdesc_browser_gameinfo_music      .byt "Play the clip's soundtrack while it show
 mdesc_browser_restoretheme        .byt "Revert the menu theme to the built-in default", 0
 mdesc_browser_restoreclassic      .byt "Load the classic sd2snes look (needs /sd2snes/classic.thm on the card)", 0
 mdesc_browser_restoremusic        .byt "Revert the menu background music to the default (menu.spc)", 0
+mdesc_browser_menumusic_random    .byt "Pick a random .spc from the music folder on each load", 0
+mdesc_browser_text_outline        .byt "Dark outline around the menu text: follow the theme, or force it", 0
+mdesc_browser_text_aa             .byt "Smooth edges on the menu text: follow the theme, or force it", 0
 mdesc_ingame_cheats               .byt "Whether to start out with cheats enabled. Can be changed using in-game buttons", 0
-mdesc_ingame_shortreset           .byt "Go back to menu on short reset (Off/On/Folder/ROM). Folder: return to last game folder. ROM: also pre-select the ROM.", 0
+mdesc_ingame_shortreset           .byt "Where a reset goes. Folder/ROM reopen the last game folder. Duration: a short press resets the game, a long one goes to the ROM.", 0
 mdesc_ingame_enable               .byt "Required for in-game buttons and 7E/7F cheats", 0
 mdesc_ingame_buttons              .byt "Enable in-game buttons (reset, en/disable cheats", 127, 128, "). Requires in-game hook to be enabled.", 0
 mdesc_ingame_cheat_overlay        .byt "In-game menu (hold L+R+Y+Left): cheats, savestates, saves and guides. Requires in-game hook. Not available on a few special-chip games.", 0
@@ -568,11 +624,13 @@ text_on_p1      .byt "On: P1", 0
 text_on_p2      .byt "On: P2", 0
 text_on         .byt "On", 0
 text_off        .byt "Off", 0
+text_theme      .byt "Theme", 0
 text_cover_large .byt "Large", 0
 text_cover_small .byt "Small", 0
 text_gameinfo_context .byt "Context", 0
 text_nav_folder .byt "Folder", 0
 text_nav_rom    .byt "ROM", 0
+text_nav_duration .byt "Duration", 0
 text_enabled    .byt "Enabled", 0
 text_disabled   .byt "Disabled", 0
 text_normal     .byt "Normal", 0
@@ -669,6 +727,12 @@ text_cheat      .byt "Cheats for ", 0
 ; EMPTY now, so both cheat UIs substitute this: the menu list draws text_cheat_noname
 ; directly, and the in-game list (a separate $C2 link that cannot reach this pool)
 ; gets text_igm_cheat_noname staged into OVL_NONAME_BUF by whichever host opened it.
+text_igm_ch_none      .byt "No cheats", 0
+text_igm_ft_tab       .byt "<>:TAB L/R:ENDS A:OPEN B:CLOSE", 0
+text_igm_ft_cheats    .byt "<>:PAGE L/R:TOP/END A:ON/OFF X:CHEATS B:BACK", 0
+text_igm_ft_generic   .byt "A:SELECT B:BACK", 0
+text_igm_master_on    .byt "CHEATS: ON", 0
+text_igm_master_off   .byt "CHEATS: OFF", 0
 text_cheat_noname .byt "(no name)", 0
 text_igm_cheat_noname .byt "(no name)", 0
 text_ips_header .byt "Patches", 0
@@ -701,6 +765,7 @@ text_patch_hdrsel_off  .byt "Headerless", 0
 
 ; pre-boot game info screen (snes/gameinfo.a65)
 text_gi_developer .byt "Developer", 0
+text_gi_publisher .byt "Publisher", 0
 text_gi_year      .byt "Year", 0
 text_gi_players   .byt "Players", 0
 text_gi_genre     .byt "Genre", 0

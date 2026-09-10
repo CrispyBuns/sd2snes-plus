@@ -137,6 +137,25 @@ nes_boot_init:
         sta @nes_chr_r1_p0           ; regiao 1 vazia
         sta @nes_chr_r1_p1
         sep #$20 : .as
+        ; --- v3.1: validade por (regiao, metade). A regiao 0 nasce
+        ;     CARREGADA (o nes_chr_load do boot sobe os 8KB lineares), a 1
+        ;     nasce vazia. Gates lidos-antes-de-escritos => init explicito
+        ;     (clear_wram enche a WRAM de $55). ---
+        lda #$01
+        sta @nes_chr_r0_v0
+        sta @nes_chr_r0_v1
+        lda #$00
+        sta @nes_chr_r1_v0
+        sta @nes_chr_r1_v1
+        sta @nes_cspl_dom_ok         ; sem dominante ate' o 1o $13 de 8K
+        sta @nes_cspl_dom_age
+        sta @nes_sp_vadm             ; v3.1 VOFS por faixa: gates do frame
+        sta @nes_vgap_pend
+        rep #$20 : .al
+        lda #$0000
+        sta @nes_sp_bn
+        sta @nes_cspl_dom
+        sep #$20 : .as
 
         ; --- v2.3 raster-split de CHR (CMD_CHR_SPLITS): gates zerados
         ;     (clear_wram enche a WRAM de $55; nada aqui e' ROM-backed).
@@ -278,6 +297,56 @@ nes_boot_init:
         sta @nes_chrw_cnt
         sta @nes_chrw_full
         sta @nes_chrw_secarm
+        sta @nes_chrw_ev          ; fast-skip do $15: os tres sao
+        sta @nes_chrw_qok         ; GATES lidos antes de escritos
+        sta @nes_chrw_qskip       ; (clear_wram enche de $55)
+        sta @nes_fb_cgdone
+        sta @nes_dbg_cgcnt        ; instrumento (contador por USB, nasce 0)
+        sta @nes_dbg_ntbank       ; SONDAS: gates lidos-antes-de-escritos
+        sta @nes_dbg_fullv         ; (clear_wram enche a WRAM de $55)
+        sta @nes_dbg_k
+        sta @nes_psp_present       ; v3.3: gate do $16, lido-antes-de-escrito
+        sta @nes_psp_cnt
+        sta @nes_swap_armed        ; v3.3: gates da regiao SWAP
+        sta @nes_swap_v0
+        sta @nes_swap_v1
+        sta @nes_swap_mode
+        sta @nes_swap_half
+        sta @nes_swap_reg
+        sta @nes_swap_dw           ; v3.4: gate da ESCRITA DUPLA (CHR-RAM).
+                                    ; O clear_wram enche a WRAM de LIXO, entao
+                                    ; TODA variavel-gate lida antes de ser
+                                    ; escrita tem de nascer zerada aqui --
+                                    ; sem isto o nes_chr_swap_arm via um dw
+                                    ; nao-nulo, saia' na hora, e a SWAP nunca
+                                    ; armava em CHR-RAM (medido: dw = $59)
+        sta @nes_chr_dma_hxor      ; idem: le no nes_chr_dma_bg todo DMA
+        sta @nes_npg_ovr           ; v3.4: breadcrumb do override do ch5
+        sta @nes_npg_ovr+1
+        sta @nes_sp_vcadm          ; v3.5: breadcrumb da corroboracao do $16
+        sta @nes_sp_vcadm+1
+        ; --- v3.5: os SELETORES DE TABELA HDMA do frame commitado (fb_regs
+        ;     +12 scroll, +13 tile-base, +14 VOFS, +15 pagina de NT) nascem
+        ;     com lixo de WRAM, e a NMI do PRIMEIRO apply ja' os le: com lixo
+        ;     ali ela arma canal de HDMA apontando para uma tabela que nunca
+        ;     foi montada. Media-se como um frame 0 nao-deterministico (o
+        ;     run_vgap_gate pegou hmask $10 e $51 em rodadas diferentes do
+        ;     MESMO binario, com o resto dos 1.500 frames byte-exato). Um
+        ;     frame so', mas e' o mesmo tipo de bug que o gate do $16 pegou:
+        ;     gate lido-antes-de-escrito. ---
+        sta @nes_fb_regs0+12
+        sta @nes_fb_regs0+13
+        sta @nes_fb_regs0+14
+        sta @nes_fb_regs0+15
+        sta @nes_fb_regs1+12
+        sta @nes_fb_regs1+13
+        sta @nes_fb_regs1+14
+        sta @nes_fb_regs1+15
+        sta @nes_nspl_pend         ; v3.4: gate do canal 5 ($2107 por faixa).
+                                    ; O fb_commit o le em TODO frame, entao
+                                    ; lixo aqui armaria o HDMA com uma tabela
+                                    ; que nunca foi montada
+        sta @nes_chr_dma_hxor
         sta @nes_chrw_pend0
         sta @nes_chrw_pend1
         sta @nes_chrw_need0
@@ -747,6 +816,19 @@ nbz_park_zero:
         inx
         cpx #$0100
         bne nbz_park_zero
+        ; --- os dois fb_cg tambem nascem parkeados (achado do advisor): o
+        ;     snapshot de CGRAM so' e' copiado em frame com paleta NOVA,
+        ;     entao um DMA de CGRAM antes do 1o CMD_PALETTE mandaria o padrao
+        ;     de power-on da WRAM pro hardware. Exatamente 160 B (bg 32 +
+        ;     obj 128) -- passar disso invadiria o nes_fb_regs0. ---
+        ldx #$0000
+        lda #$00
+nbz_park_cg:
+        sta @nes_fb_cg0,x
+        sta @nes_fb_cg1,x
+        inx
+        cpx #$00a0
+        bne nbz_park_cg
         ldx #$0001                 ; byte Y do slot 0 de cada pagina
 nbz_park_hide:
         lda #$f0

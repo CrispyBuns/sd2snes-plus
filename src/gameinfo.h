@@ -106,7 +106,15 @@ typedef struct __attribute__((__packed__)) _gameinfo_meta {
                                  line/value cap (YAML_BUFLEN); the parser cannot deliver more */
   uint8_t  fmv_fps;           /* +410 ($19A) FMV playback fps (when GAMEINFO_FLAG_FMV) */
   uint16_t fmv_frames;        /* +411 ($19B) total FMV frames (info/debug; the MCU loops) */
-} gameinfo_meta_t;            /* 413 bytes */
+  char     publisher[40];     /* +413 ($19D) APPENDED, and every later field must be too: the
+                                 SNES reads this struct by FIXED address (GI_* in
+                                 snes/memmap.i65), so inserting in the middle would silently
+                                 shift 8 symbols. Room check: the struct now ends at
+                                 $FF7400+453 = $FF75C5 and the next region,
+                                 SRAM_GAMEINFO_DESCEXT_ADDR, starts at $FF7600 -> 59 bytes
+                                 of headroom left. An older firmware never writes this, so
+                                 the menu skips the row when the first byte is 0 or $FF. */
+} gameinfo_meta_t;            /* 453 bytes */
 
 /* Build "/sd2snes/info/[<ns>/]<BB>/<stem>" into `out`: the shared derivation for every
  * /sd2snes/info asset. A thin wrapper over path_asset() (fileops.c), which owns the two-letter

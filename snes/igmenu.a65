@@ -37,6 +37,9 @@ igmenu_header:
 
 #include "cheatlist.i65"           ; shared cheat-list layout defines + render/input routines
                                    ; (OWN copy in $C8; SEPARATE link -> no symbol collision)
+#include "trainer_defs.i65"        ; TRAINER tab layout/scratch/macros. Must be in scope
+                                   ; EARLY: ig_bar_sync reads tr_bar_row long before the
+                                   ; code include at the bottom of this file.
 #include "igmenu_lang.i65"         ; GENERATED: HELP tab i18n string tables + IGM_HELP_NLINES/
                                    ; IGM_LANG_COUNT (bank $C8 data, jumped over -- included
                                    ; BEFORE help_enter so its #defines are in scope)
@@ -296,29 +299,24 @@ igmenu_header:
                                    ;   BAR marks the guide-list cursor now (see ig_bar_sync)
 #define GD_TITLE_COL    18         ; guide title column
 
-#define IGMENU_TABS     4          ; AJUDA (tab 4) removed from the BAR by request -- its
-                                   ;   code/tables stay (5 entries) for a future options screen
+#define IGMENU_TABS     5          ; TRAINER (tab 4) took the visible slot AJUDA gave up;
+                                   ;   HELP is now tab 5, still off the bar (6 table entries)
 #define TABBAR_ROW      1          ; tab bar tile row (over the $C0 "CHEATS" title)
 #define TABBAR_COL0     2          ; first tab's base logical column (tabs at 2/14/26/38/50)
-#define IGM_TAB_FIELD   13         ; label field width (4 tabs x 15 = 60 cols)
-                                   ;   guarded in gen_igmenu_lang.py (TAB_LABEL_MAX)
-#define TABBAR_SLOT     15         ; sep(1) + field(13) + sep(1); bases 2/17/32/47
+#define IGM_TAB_FIELD   10         ; label field width (5 tabs x 12 = 60 cols). Safe by
+                                   ;   construction: gen_igmenu_lang.py has ALWAYS capped tab
+                                   ;   labels at 10 (TAB_LABEL_MAX), so no translation moves
+#define TABBAR_SLOT     12         ; sep(1) + field(10) + sep(1); bases 2/14/26/38/50
 ; Footer is PER FOCUS LEVEL x tab (igmenu_draw_footer reads igmenu_flags bit1): at the tab-bar
 ; level a universal tab-nav line; at the content level a per-tab line (Cheats advertises X /
-; ON-OFF, the others a generic SELECT / BACK). All three live in ig_footer_str, concatenated in
-; this order (tab-bar, Cheats-content, generic-content); the draw picks (offset, len, col).
-#define IG_FT_TAB_COL   17         ; tab-bar footer start column ((64-30)/2)
-#define IG_FT_TAB_LEN   30
-#define IG_FT_CHT_COL   10         ; Cheats content footer start column ((64-44)/2)
-#define IG_FT_CHT_LEN   44
-#define IG_FT_GEN_COL   24         ; generic content footer start column ((64-15)/2)
-#define IG_FT_GEN_LEN   15
+; ON-OFF, the others a generic SELECT / BACK). The three lines are LOCALIZED (IGM_SH_FT_* in
+; igm_shell_tbl) and centered at draw time, so there is no start column or length to keep in
+; sync with the text any more.
+#define IG_FOOTER_ROW   25         ; absolute tile row of the footer
 
-; Master cheat switch status line (CHEATS tab only): row 2, between the tab bar (row 1)
-; and the list body (rows 4..23). 11 chars: "CHEATS: ON " / "CHEATS: OFF".
+; Master cheat switch status line (CHEATS tab only): between the tab bar (row 1) and the
+; list body (rows 4..23). LOCALIZED (IGM_SH_MASTER_ON/OFF) and centered at draw time.
 #define IG_MASTER_ROW   3          ; row 2 belongs to the tab boxes' bottom border now
-#define IG_MASTER_COL   26         ; (64-11)/2
-#define IG_MASTER_LEN   11
 
 ; ======================================================================
 ;  Entry. Runs in forced blank (the $C0 hook fires BEFORE its unblank).
@@ -450,8 +448,27 @@ igm_no_slotpos:
 	                                         ;   restored tab's enter has run, so its cursor vars
 	                                         ;   are live and the bar is right on the FIRST frame
 	; --- seed pprev with the held opening combo so it makes no fresh edge.  Samples the
-	;     LIVE pad, so it is agnostic to which combo is armed (IngameButtonsMenu). ---
-	lda @$004218 : sta @ovl_pprev
+	;     LIVE pad, so it is agnostic to which combo is armed (IngameButtonsMenu).
+	;     BOTH controllers, merged exactly like read_pad (snes/pad.a65) does for the rest of
+	;     the menu: the low nibble of $4218/$421a is the controller ID and reads 0 only for a
+	;     standard pad, so a non-zero nibble means a non-standard controller whose buttons
+	;     must be ignored -- and what the mask leaves behind carries no button bits, so ORing
+	;     it in contributes nothing instead of injecting phantom presses.  The seed and the
+	;     input loop below MUST sample the same pair, or player 2 holding a button at open
+	;     time would produce a phantom edge on the first frame. ---
+	lda @$004218
+	and #$000f
+	bne igm_seed_pad1_id
+	lda @$004218
+igm_seed_pad1_id:
+	sta @ovl_pprev
+	lda @$00421a
+	and #$000f
+	bne igm_seed_pad2_id
+	lda @$00421a
+igm_seed_pad2_id:
+	ora @ovl_pprev
+	sta @ovl_pprev
 	; --- arm the theme's HDMA channels. LAST thing before the unblank, not inside
 	;     ig_theme_init: HDMA keeps running in forced blank, so an armed gradient channel
 	;     (which drives $2121/$2122 every band) would cut into the CGRAM address/data pairs
@@ -502,7 +519,18 @@ igmenu_loop:
 	- lda @$004212 : and #$01 : beq -       ; auto-joypad read START (bit0 set)
 	- lda @$004212 : and #$01 : bne -       ; auto-joypad read DONE (bit0 clear)
 	rep #$20 : .al
-	lda @$004218                            ; fresh pad
+	lda @$004218                            ; fresh pad, controller 1...
+	and #$000f
+	bne igm_pad1_id
+	lda @$004218
+igm_pad1_id:
+	sta @ovl_cur
+	lda @$00421a                            ; ...merged with controller 2 (see the seed above)
+	and #$000f
+	bne igm_pad2_id
+	lda @$00421a
+igm_pad2_id:
+	ora @ovl_cur
 	sta @ovl_cur
 	eor @ovl_pprev
 	and @ovl_cur                            ; (cur ^ prev) & cur = newly pressed
@@ -575,6 +603,15 @@ ig_not_viewer:
 	bit #$8000                              ; B -> back to the tab bar (re-grey), NOT close
 	sep #$20 : .as
 	beq ig_content_disp
+	rep #$30 : .al : .xl
+	lda @active_tab : and #$00ff
+	cmp #$0004
+	bne ig_b_leave
+	jsr trainer_back                        ; TRAINER has screens of its own (results ->
+	bcc ig_b_leave                          ;   detail): offer it B first, and only drop
+	jmp ig_loop_tail                        ;   focus when it declines (carry clear)
+ig_b_leave:
+	sep #$20 : .as
 	jsr ig_focus_leave
 	jmp ig_loop_tail
 ig_content_disp:
@@ -716,7 +753,7 @@ ifl_footer:
 	plp
 	rts
 
-; ---- tab_focus_tbl[1..4]: STATES/SAVES/GUIDES/HELP just take content focus (their input handler
+; ---- tab_focus_tbl[1..5]: STATES/SAVES/GUIDES/TRAINER/HELP just take content focus (their input handler
 ;      becomes live); no grey visual. (GUIDES: manual_input then handles A -> enter the viewer.) ----
 ig_focus_setbit1:
 	php
@@ -862,6 +899,192 @@ ce_done:
 	plp
 	rts
 
+; ---- CHEATS tab i18n string indices -- lockstep with CHEATS_LABELS order in
+;      gen_igmenu_lang.py. Line 0 is ALSO read directly by igm_fill_noname (it is at
+;      offset 0 of the table whatever follows it), line 1 goes through ch_copy. ----
+#define IGM_CH_NONAME   0
+#define IGM_CH_NONE     1
+
+; ---- "no cheats" message, centered on row 13. LOCALIZED: the text comes out of
+;      igm_cheats_tbl (bank $C8) like every other tab's.
+;      It used to be nine hard-coded ASCII stores in cheatlist.i65 -- that file is
+;      shared source that also assembles into the $C1 overlay host, which cannot reach
+;      a $C8 table, so the string could not be localized while the single-tab fail-safe
+;      existed. With the fail-safe gone the shell is the only host that draws it.
+;      Shape mirrors sst_draw_centered; reuses the STATES transients (sst_lang/sst_tmp)
+;      the same way saves_enter does -- the tabs never run at the same time. ----
+ss_ovl_draw_empty:
+	php
+	phb
+	sep #$20 : .as
+	lda #$f4 : pha : plb                       ; DBR=$F4 (OVL_RB abs writes)
+	lda @CFG_LANGUAGE                          ; $FF01B7
+	cmp #IGM_LANG_COUNT
+	bcc cde_lang_ok
+	lda #$00                                   ; out of range -> English (column 0)
+cde_lang_ok:
+	rep #$30 : .al : .xl
+	and #$00ff
+	sta @sst_lang
+	lda #IGM_CH_NONE
+	jsr ch_strlen                              ; A = encoded length
+	sta @sst_tmp
+	lda #$0040
+	sec : sbc @sst_tmp                         ; 64 - len
+	lsr                                        ; / 2
+	tay                                        ; Y = start column
+	jsr ovl_row_clear                          ; preserves Y
+	lda #IGM_CH_NONE
+	jsr ch_copy                                ; copy string at Y
+	ldx #$000d                                 ; absolute tile row 13
+	jsr ovl_flush_abs
+	plb
+	plp
+	rts
+
+; ---- Shell-chrome i18n string indices -- lockstep with SHELL_LABELS in
+;      gen_igmenu_lang.py. ----
+#define IGM_SH_FT_TAB     0
+#define IGM_SH_FT_CHEATS  1
+#define IGM_SH_FT_GENERIC 2
+#define IGM_SH_MASTER_ON  3
+#define IGM_SH_MASTER_OFF 4
+
+; ---- draw shell-chrome string A(16)=line index centered on absolute row X(16).
+;      Sets sst_lang itself, so it works from any tab. DBR is set here. ----
+sh_draw_centered:
+	php
+	rep #$30 : .al : .xl
+	sta @sst_tmp                               ; line index -- SAVE A FIRST: setting DBR
+	txa                                        ;   below goes through A and would eat it
+	sta @sst_row                               ; absolute row (X on entry)
+	phb
+	sep #$20 : .as
+	lda #$f4 : pha : plb                       ; DBR=$F4 (OVL_RB abs writes)
+	lda @CFG_LANGUAGE
+	cmp #IGM_LANG_COUNT
+	bcc shd_lang_ok
+	lda #$00
+shd_lang_ok:
+	rep #$30 : .al : .xl
+	and #$00ff
+	sta @sst_lang
+	lda @sst_tmp
+	jsr sh_strlen                              ; A = encoded length
+	sta @sst_scr_coff
+	lda #$0040
+	sec : sbc @sst_scr_coff                    ; 64 - len
+	lsr                                        ; / 2
+	tay                                        ; Y = start column
+	jsr ovl_row_clear                          ; preserves Y
+	lda @sst_tmp
+	jsr sh_copy
+	lda @sst_row
+	tax
+	jsr ovl_flush_abs
+	plb
+	plp
+	rts
+
+; ---- copy/measure a shell-chrome string (same shape as ch_copy/ch_strlen, on
+;      igm_shell_tbl). A(16)=line index; sh_copy takes Y(16)=dest column, DBR=$F4. ----
+sh_copy:
+	php
+	rep #$30 : .al : .xl
+	asl : asl : asl
+	clc : adc @sst_lang
+	asl
+	tax
+	lda @igm_shell_tbl, x
+	tax
+	sep #$20 : .as
+sh_copy_l:
+	lda @$c80000, x
+	beq sh_copy_d
+	sta OVL_RB, y
+	inx
+	iny
+	cpy #IG_HELP_MAXCOL
+	bne sh_copy_l
+sh_copy_d:
+	rep #$30 : .al : .xl
+	plp
+	rts
+
+sh_strlen:
+	php
+	rep #$30 : .al : .xl
+	asl : asl : asl
+	clc : adc @sst_lang
+	asl
+	tax
+	lda @igm_shell_tbl, x
+	tax
+	ldy #$0000
+	sep #$20 : .as
+sh_sl_l:
+	lda @$c80000, x
+	beq sh_sl_d
+	inx
+	iny
+	cpy #IG_HELP_MAXCOL
+	bne sh_sl_l
+sh_sl_d:
+	rep #$30 : .al : .xl
+	tya
+	plp
+	rts
+
+; ---- copy a NUL-terminated font-encoded CHEATS string into OVL_RB. A(16)=line index,
+;      Y(16)=dest column; DBR=$F4. Bounded by IG_HELP_MAXCOL. Uses sst_lang. ----
+ch_copy:
+	php
+	rep #$30 : .al : .xl
+	asl : asl : asl                            ; index*8 (IGM_LANG_STRIDE, see he_copy)
+	clc : adc @sst_lang                        ; + lang column
+	asl                                        ; *2 (word index)
+	tax
+	lda @igm_cheats_tbl, x                     ; A = source byte offset within bank $C8
+	tax
+	sep #$20 : .as
+ch_copy_l:
+	lda @$c80000, x                            ; long,X source byte (bank $C8)
+	beq ch_copy_d
+	sta OVL_RB, y                              ; abs,Y (DBR=$F4)
+	inx
+	iny
+	cpy #IG_HELP_MAXCOL
+	bne ch_copy_l
+ch_copy_d:
+	rep #$30 : .al : .xl
+	plp
+	rts
+
+; ---- encoded length of a CHEATS string. A(16)=line index -> A(16)=length. Uses sst_lang. ----
+ch_strlen:
+	php
+	rep #$30 : .al : .xl
+	asl : asl : asl
+	clc : adc @sst_lang
+	asl
+	tax
+	lda @igm_cheats_tbl, x
+	tax
+	ldy #$0000
+	sep #$20 : .as
+ch_sl_l:
+	lda @$c80000, x
+	beq ch_sl_d
+	inx
+	iny
+	cpy #IG_HELP_MAXCOL
+	bne ch_sl_l
+ch_sl_d:
+	rep #$30 : .al : .xl
+	tya
+	plp
+	rts
+
 cheats_input:
 	php
 	; A ($0080) -> toggle
@@ -954,32 +1177,22 @@ igm_ms_send:
 ;      ever shows where X actually does something. One full row = one flush, which fits
 ;      the vblank budget (the list redraw batches TWO rows per frame). ----
 ig_master_draw:
+	; Localized (igm_shell_tbl): pick ON/OFF and let sh_draw_centered center it. The
+	; old version copied a fixed-width run out of ig_master_str at a fixed column.
 	php
-	phb
-	sep #$20 : .as
-	lda #$f4 : pha : plb                      ; DBR=$F4 (OVL_RB abs writes)
 	rep #$30 : .al : .xl
-	jsr ovl_row_clear
+	sep #$20 : .as
 	lda @CHEAT_MASTER
-	and #$00ff                                ; byte value (the next BSRAM byte is not ours)
-	beq igm_md_off
-	ldx #$0000                                ; "CHEATS: ON "
-	bra igm_md_copy
-igm_md_off:
-	ldx #IG_MASTER_LEN                        ; "CHEATS: OFF"
-igm_md_copy:
-	ldy #IG_MASTER_COL
-	sep #$20 : .as
-igm_md_l:
-	lda @ig_master_str, x
-	sta OVL_RB, y
-	inx : iny
-	cpy #(IG_MASTER_COL+IG_MASTER_LEN)
-	bne igm_md_l
 	rep #$30 : .al : .xl
+	and #$00ff
+	beq igm_md_off
+	lda #IGM_SH_MASTER_ON
+	bra igm_md_go
+igm_md_off:
+	lda #IGM_SH_MASTER_OFF
+igm_md_go:
 	ldx #IG_MASTER_ROW
-	jsr ovl_flush_abs
-	plb
+	jsr sh_draw_centered
 	plp
 	rts
 
@@ -2636,11 +2849,12 @@ itb_tinted:
 	jsr ovl_row_clear
 	ldy #$0000                                ; Y = tab index 0..4
 ig_tb_loop:
-	; base col = TABBAR_COL0 + tab*TABBAR_SLOT(15 = 1 + 13 + 1)
+	; base col = TABBAR_COL0 + tab*TABBAR_SLOT(12 = 1 + 10 + 1)
 	tya
 	sta @ovl_rowoff                           ; tab (held for the whole iteration)
-	asl : asl : asl : asl                     ; *16
-	sec : sbc @ovl_rowoff                     ; *15 (= TABBAR_SLOT)
+	asl                                       ; *2
+	clc : adc @ovl_rowoff                     ; *3
+	asl : asl                                 ; *12 (= TABBAR_SLOT)
 	clc : adc #TABBAR_COL0
 	sta @ovl_idx                              ; base col
 	; --- source offset = igm_tab_tbl[(tab*IGM_LANG_STRIDE + lang)*2] ---
@@ -2692,7 +2906,7 @@ it_copy_d:
 	sep #$20 : .as
 	lda #26 : sta OVL_RB, x                      ; window_wv border (left)
 	rep #$20 : .al
-	lda @ovl_idx : clc : adc #(IGM_TAB_FIELD+1) : tax   ; X = base+14 (16-bit A -> clean tax)
+	lda @ovl_idx : clc : adc #(IGM_TAB_FIELD+1) : tax   ; X = base+11 (16-bit A -> clean tax)
 	sep #$20 : .as
 	lda #27 : sta OVL_RB, x                       ; window_ev border (right)
 	rep #$30 : .al : .xl
@@ -2710,30 +2924,32 @@ itb_lbl_ok:
 	jsr ovl_flush_abs
 	; --- recolor the active tab's WHOLE slot (base .. base+11 = cap + label field + cap) to the
 	;     frame cyan: with every tab capsuled, colour is the ONLY active marker. OVL_RB still holds
-	;     the flushed bar row; DBR=$F4. base col = TABBAR_COL0 + active_tab*TABBAR_SLOT(12). ---
+	;     the flushed bar row; DBR=$F4. base col = TABBAR_COL0 + active_tab*TABBAR_SLOT. ---
 	lda @igm_tab_tint : cmp #$2c00
 	bne itb_no_hl                             ; greyed bar = uniform, no active highlight
 	lda @active_tab : and #$00ff
 	sta @ovl_cur                              ; tab-bar scratch, dead after the loop
-	asl : asl : asl : asl                     ; *16
-	sec : sbc @ovl_cur                        ; *15 (= TABBAR_SLOT)
+	asl                                       ; *2
+	clc : adc @ovl_cur                        ; *3
+	asl : asl                                 ; *12 (= TABBAR_SLOT)
 	clc : adc #TABBAR_COL0                    ; base col
 	sta @ig_rc_col
-	clc : adc #TABBAR_SLOT                    ; base + slot (exclusive end -> cols base..base+14)
+	clc : adc #TABBAR_SLOT                    ; base + slot (exclusive end -> cols base..base+11)
 	sta @ig_rc_end
 	lda #TABBAR_ROW : sta @ig_rc_row
 	lda #$2c00 : sta @ig_rc_pal
 	jsr ig_recolor
 itb_no_hl:
 	; --- row 1's separators in the frame amber, ALL of them (the active-slot recolor above
-	;     already made its own pair amber; repainting all 8 is idempotent). Single-cell VRAM
+	;     already made its own pair amber; repainting all 10 is idempotent). Single-cell VRAM
 	;     writes, row 1: even col -> BG2 entry, odd -> BG1, entry index = 32 + col>>1. ---
 	lda #$0000 : sta @ovl_rowoff              ; tab counter
 igt_sep_l:
 	lda @ovl_rowoff
 	sta @ovl_cur
-	asl : asl : asl : asl                     ; *16
-	sec : sbc @ovl_cur                        ; *15 (= TABBAR_SLOT)
+	asl                                       ; *2
+	clc : adc @ovl_cur                        ; *3
+	asl : asl                                 ; *12 (= TABBAR_SLOT)
 	clc : adc #TABBAR_COL0
 	sta @ovl_cur                              ; current col = base (left separator)
 	lda #$0034 : ora @igm_tab_tint            ; WV = (26<<1) | tint
@@ -2744,21 +2960,22 @@ igt_sep_l:
 	lda @ovl_rowoff : inc : sta @ovl_rowoff
 	cmp #IGMENU_TABS
 	bcc igt_sep_l
-	; --- rows 0 and 2: the boxes' TOP and BOTTOM borders, the four tabs JOINED edge to edge
+	; --- rows 0 and 2: the boxes' TOP and BOTTOM borders, the five tabs JOINED edge to edge
 	;     (NE|NW and SE|SW corner pairs back to back at the shared edges) -- the dialogs'
 	;     border look wrapped around every tab. Flushed in the frame amber. ---
 	jsr ovl_row_clear
 	ldy #$0000                                ; tab index
 igt_top_l:
 	tya : sta @ovl_cur
-	asl : asl : asl : asl
-	sec : sbc @ovl_cur                        ; *15
+	asl
+	clc : adc @ovl_cur
+	asl : asl                                 ; *12 (= TABBAR_SLOT)
 	clc : adc #TABBAR_COL0
 	tax                                       ; X = base col (A clean 16-bit)
 	phy
 	sep #$20 : .as
 	lda #20 : sta OVL_RB, x                   ; NW corner
-	ldy #$000d                                ; 13 edge cells (the label field)
+	ldy #IGM_TAB_FIELD                        ; edge cells across the label field
 	lda #24                                   ; NH edge
 igt_top_e:
 	inx
@@ -2779,14 +2996,15 @@ igt_top_e:
 	ldy #$0000
 igt_bot_l:
 	tya : sta @ovl_cur
-	asl : asl : asl : asl
-	sec : sbc @ovl_cur
+	asl
+	clc : adc @ovl_cur
+	asl : asl                                 ; *12 (= TABBAR_SLOT)
 	clc : adc #TABBAR_COL0
 	tax
 	phy
 	sep #$20 : .as
 	lda #22 : sta OVL_RB, x                   ; SW corner
-	ldy #$000d
+	ldy #IGM_TAB_FIELD
 	lda #25                                   ; SH edge
 igt_bot_e:
 	inx
@@ -2825,49 +3043,28 @@ igt_sc_go:
 ;  Footer (row 25): the new bindings. Copied from a $C8 string via long,X. Forced blank.
 ; ======================================================================
 igmenu_draw_footer:
+	; The three footers are localized now (igm_shell_tbl), so this only PICKS the line
+	; and lets sh_draw_centered measure and center it. It used to copy a fixed run out
+	; of ig_footer_str with a hard-coded start column and length per string -- which is
+	; exactly what stopped it being translatable.
 	php
-	phb
-	sep #$20 : .as
-	lda #$f4 : pha : plb                      ; DBR=$F4
 	rep #$30 : .al : .xl
-	jsr ovl_row_clear
-	; pick the footer by focus level (igmenu_flags bit1) then tab. ovl_idx counts the chars
-	; left (the three strings differ in length AND start column).
 	lda @igmenu_flags
 	bit #$0002
 	bne ig_ft_content                         ; content focus -> per-tab content line
-	ldx #$0000                                ; tab-bar line (offset 0)
-	ldy #IG_FT_TAB_COL
-	lda #IG_FT_TAB_LEN
+	lda #IGM_SH_FT_TAB
 	bra ig_ft_go
 ig_ft_content:
 	lda @active_tab
+	and #$00ff
 	bne ig_ft_generic
-	ldx #IG_FT_TAB_LEN                        ; Cheats content line (right after the tab-bar one)
-	ldy #IG_FT_CHT_COL
-	lda #IG_FT_CHT_LEN
+	lda #IGM_SH_FT_CHEATS
 	bra ig_ft_go
 ig_ft_generic:
-	ldx #(IG_FT_TAB_LEN+IG_FT_CHT_LEN)        ; generic content line (last)
-	ldy #IG_FT_GEN_COL
-	lda #IG_FT_GEN_LEN
+	lda #IGM_SH_FT_GENERIC
 ig_ft_go:
-	sta @ovl_idx                              ; remaining characters
-	sep #$20 : .as
-ig_ft_loop:
-	lda @ig_footer_str, x
-	sta OVL_RB, y
-	inx : iny
-	rep #$20 : .al
-	lda @ovl_idx : dec : sta @ovl_idx
-	beq ig_ft_done
-	sep #$20 : .as
-	bra ig_ft_loop
-ig_ft_done:
-	rep #$30 : .al : .xl
-	ldx #$0019                                ; absolute tile row 25
-	jsr ovl_flush_abs
-	plb
+	ldx #IG_FOOTER_ROW
+	jsr sh_draw_centered
 	plp
 	rts
 
@@ -3141,7 +3338,20 @@ igb_content:
 	cmp #$0001 : beq igb_t_states
 	cmp #$0002 : beq igb_t_saves
 	cmp #$0003 : beq igb_t_guides
-	jmp igb_place                                ; tab 4 (HELP) is static -> keep the capsule
+	cmp #$0004 : beq igb_t_trainer
+	jmp igb_place                                ; tab 5 (HELP) is static -> keep the capsule
+
+igb_t_trainer:
+	; the TRAINER tab publishes its own selectable row (tr_bar_row, 0 = none: the RESULTS
+	; browser and the busy/message screens have no per-row cursor of their own).
+	lda @tr_bar_row
+	bne igb_tr_row
+	jmp igb_place
+igb_tr_row:
+	sta @ig_bar_row
+	lda @ig_win_x : and #$00ff : inc : sta @ig_bar_xl     ; the frame's interior span, the
+	lda @ig_win_w : and #$00ff : dec : dec : sta @ig_bar_wl ; same shape GUIDES uses
+	jmp igb_place
 
 igb_t_cheats:
 	lda @ovl_count
@@ -3238,8 +3448,9 @@ igb_target_tab:
 	lda #TABBAR_ROW : sta @ig_bar_row
 	lda @active_tab : and #$00ff
 	sta @ig_bar_tmp
-	asl : asl : asl : asl                        ; *16
-	sec : sbc @ig_bar_tmp                        ; *15 (= TABBAR_SLOT)
+	asl                                          ; *2
+	clc : adc @ig_bar_tmp                        ; *3
+	asl : asl                                    ; *12 (= TABBAR_SLOT)
 	clc : adc #TABBAR_COL0
 	inc                                          ; +1: INSIDE the box (skip the left border cell)
 	sta @ig_bar_xl
@@ -3680,6 +3891,12 @@ iot_done:
 	plp
 	rts
 
+; TRAINER tab (WRAM search / filter / freeze). Included LAST so every #define above is
+; in scope (cpp is textual: at the top of the file active_tab/IGM_TAB_FIELD/... do not
+; exist yet) and every igmenu helper it calls is already assembled -- no forward
+; references, no short-branch surprises. Its data tail is followed only by labels.
+#include "trainer.i65"
+
 ; ======================================================================
 ;  Data (bank $C8; never executed).
 ; ======================================================================
@@ -3688,25 +3905,29 @@ tab_enter_tbl:
 	.word states_enter                       ; 1 SAVESTATES (savestate slot selector)
 	.word saves_enter                        ; 2 SAVES  (battery save status)
 	.word manual_enter                       ; 3 GUIDES (image viewer prompt)
-	.word help_enter                         ; 4 HELP   (static i18n reference)
+	.word trainer_enter                      ; 4 TRAINER (WRAM search)
+	.word help_enter                         ; 5 HELP   (static i18n reference, off the bar)
 tab_input_tbl:
 	.word cheats_input                       ; 0 CHEATS
 	.word states_input                       ; 1 SAVESTATES
 	.word saves_input                        ; 2 SAVES: SRAM slot nav (noop when slots off)
 	.word manual_input                       ; 3 GUIDES: list nav / A -> enter the viewer
-	.word ig_noop                            ; 4 HELP  (static page, no input)
+	.word trainer_input                      ; 4 TRAINER
+	.word ig_noop                            ; 5 HELP  (static page, no input)
 tab_tick_tbl:
 	.word cheats_tick                        ; 0 CHEATS
 	.word ig_noop                            ; 1 SAVESTATES
 	.word ig_noop                            ; 2 SAVES
 	.word ig_noop                            ; 3 GUIDES
-	.word ig_noop                            ; 4 HELP
+	.word ig_noop                            ; 4 TRAINER
+	.word ig_noop                            ; 5 HELP
 tab_leave_tbl:
 	.word cheats_leave                       ; 0 CHEATS
 	.word ig_noop                            ; 1 SAVESTATES
 	.word ig_noop                            ; 2 SAVES
 	.word ig_noop                            ; 3 GUIDES
-	.word ig_noop                            ; 4 HELP
+	.word trainer_leave                      ; 4 TRAINER (persist the session block)
+	.word ig_noop                            ; 5 HELP
 
 ; ---- two-level focus: A at the tab bar drills into a tab's content. Tab 0 (Cheats) un-greys +
 ;      shows the cursor; tabs 1-4 just take content focus (their input becomes live). ----
@@ -3715,20 +3936,10 @@ tab_focus_tbl:
 	.word ig_focus_setbit1                   ; 1 SAVESTATES
 	.word ig_focus_setbit1                   ; 2 SAVES
 	.word ig_focus_setbit1                   ; 3 GUIDES (manual_input then A -> viewer)
-	.word ig_focus_setbit1                   ; 4 HELP
+	.word ig_focus_setbit1                   ; 4 TRAINER
+	.word ig_focus_setbit1                   ; 5 HELP
 
-ig_footer_str:
-	.byt "<>:TAB L/R:ENDS A:OPEN B:CLOSE"                    ; IG_FT_TAB_LEN = 30 (tab-bar level)
-	.byt "<>:PAGE L/R:TOP/END A:ON/OFF X:CHEATS B:BACK"      ; IG_FT_CHT_LEN = 44 (Cheats content)
-	.byt "A:SELECT B:BACK"                                   ; IG_FT_GEN_LEN = 15 (generic content)
-
-; Master cheat switch status line, two fixed-width (IG_MASTER_LEN) variants: ON first,
-; OFF second -- ig_master_draw indexes with 0 / IG_MASTER_LEN.
-ig_master_str:
-	.byt "CHEATS: ON "
-	.byt "CHEATS: OFF"
-
-; Tab icons: 5 x 8x8 1bpp (bit set = ink). Order = tab order (Cheats/Savestates/Saves/Guides/Help).
+; Tab icons: 6 x 8x8 1bpp (bit set = ink). Order = tab order (Cheats/Savestates/Saves/Guides/Trainer/Help).
 ; Uploaded to OBJ tiles 0..4 by ig_obj_load; ig_obj_tabbar draws ONE sprite (tile = active_tab)
 ; at a fixed X/Y -- and ig_obj_load leaves OBJ off the main screen, so nothing renders today
 ; (8x8 icons read as garbled stripes; a good icon needs 16x16 custom art).
@@ -3737,7 +3948,8 @@ ig_icon_font:
 	.byt $00,$7e,$ff,$db,$db,$ff,$7e,$00   ; 1 SAVESTATES (camera)
 	.byt $18,$7e,$42,$5a,$5a,$5a,$7e,$00   ; 2 SAVES      (battery)
 	.byt $00,$66,$ff,$db,$db,$db,$ff,$00   ; 3 GUIDES     (book)
-	.byt $3c,$66,$06,$0c,$18,$00,$18,$00   ; 4 HELP       (question mark)
+	.byt $18,$3c,$7e,$18,$18,$7e,$3c,$18   ; 4 TRAINER    (magnifier/target)
+	.byt $3c,$66,$06,$0c,$18,$00,$18,$00   ; 5 HELP       (question mark)
 
 ; HELP tab layout: absolute tile row + start column per line. Language-independent;
 ; lockstep with HELP_LABELS order in gen_igmenu_lang.py (IGM_HELP_NLINES=13 entries).
@@ -3755,12 +3967,24 @@ igm_help_cols:
 ; Per-tab frame geometry (x, y, w, h in tile cells), record = (active_tab-1)*4. Sized to each
 ; tab's content instead of the old full-body frame. INVARIANT: x ODD and x+w-1 EVEN (left
 ; border cell lands on BG1, right on BG2 -- ig_draw_window's side writes assume it).
+; WIDTH IS SET BY THE LONGEST TRANSLATED LINE, not by the widest label column. Every
+; centered line (sst_draw_centered and friends) is centered on the 64-column ROW, not on
+; the frame, so a line longer than the frame's interior has its head written UNDER the
+; left border -- and the border is drawn AFTER the body, so the first characters simply
+; vanish. The worst line today is the SAVES autosave hint at 47 encoded chars (pt/es/fr),
+; which occupies columns 8..54; x=5/w=54 gives an interior of 6..57 and keeps the frame
+; centered where it was, so the absolute-column content inside stays put.
+; PARITY IS NOT OPTIONAL: mode-5 splits the row between BG1 (odd logical columns) and BG2
+; (even), and ig_draw_window's side writes assume the LEFT border sits on an odd column and
+; the RIGHT one on an even column. x must stay ODD and w EVEN, or the verticals land on the
+; wrong plane and the corners stop meeting the horizontals (seen on hardware with x=6/w=52).
 ig_frame_geom:
-	.byt 13, 4, 38, 18     ; 1 SAVESTATES: title r6, slots r9-15, hint r19 -> rows 4..21, cols 13..50
-	.byt 13, 4, 38, 18     ; 2 SAVES: the slot selector (EnableSramSlots is retired/always-on;
+	.byt  5, 4, 54, 18     ; 1 SAVESTATES: title r6, slots r9-15, hint r19 -> rows 4..21, cols 5..58
+	.byt  5, 4, 54, 18     ; 2 SAVES: the slot selector (EnableSramSlots is retired/always-on;
 	                       ;   the wide status-only view is dead code) -- same box as SAVESTATES
-	.byt 13, 4, 40, 18     ; 3 GUIDES: list r5-14 / prompt r6..19 (keys r18/19) -> cols 13..52
-	.byt  1, 3, 62, 22     ; 4 HELP (kept for the future options screen; the old full body)
+	.byt  5, 4, 54, 18     ; 3 GUIDES: list r5-14 / prompt r6..19 (keys r18/19)
+	.byt  5, 4, 54, 18     ; 4 TRAINER: title r6, fields r8+, actions, hint r20
+	.byt  1, 3, 62, 22     ; 5 HELP (kept for the future options screen; the old full body)
 
 ig_thm_math_def:
 	.byt $01, $00, $2a                       ; 1 line : $2131 = $00, $2132 = $2a  (bar colour)

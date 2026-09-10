@@ -157,7 +157,13 @@
                                     (idx 16/17); v3++ acrescenta i2s_dat_max @ +24
                                     (idx 18); v3+++ acrescenta pal_sum/pal_wr_ctr @
                                     +28/+29 (idx 22/23); v3++++ acrescenta nt_wr_ctr
-                                    @ +25 (idx 19; +26..+27 reservados = 0).
+                                    @ +25 (idx 19; +26..+27 reservados = 0);
+                                    Lote 2 acrescenta +30 status da bridge (idx
+                                    24), +31 byte de debug do RENDERER via $2BDF
+                                    (idx 25: applies de CGRAM, bit 7 = DMA fora
+                                    do vblank), +32/+33 ACK/SEQ lo (idx 26/27;
+                                    lag = (seq-ack)&0xff). Bloco = 34 B; firmware
+                                    antiga deixa +30..+33 como lixo de PSRAM.
                                     SEM bump (layout so' cresce/preenche gaps) */
 
 typedef struct __attribute__ ((__packed__)) _nes_header {
@@ -184,7 +190,9 @@ typedef struct __attribute__ ((__packed__)) _nes_romprops {
   uint8_t  has_trainer;      /* iNES flags6 bit2 -- 512B trainer skipped before PRG when set */
   uint8_t  has_chr_ram;      /* chr_8k_banks == 0 -> mapper_flags[15] */
   uint8_t  is_nes20;         /* NES 2.0 header (flags7 bits 3:2 == 10b); sizes still read as classic iNES */
-  uint8_t  supported;        /* mapper_id in the Phase 0 set {0,1,2,3,7,28} AND !four_screen */
+  uint8_t  supported;        /* mapper_id accepted by nes_mapper_supported() (nes.c holds the
+                                canonical list; it grows per batch) AND within that mapper's
+                                bank-selector size limit AND !four_screen */
   uint32_t prgsize_bytes;    /* PRG bytes actually streamed to NES_PSRAM_PRG_ADDR */
   uint32_t chrsize_bytes;    /* CHR bytes actually streamed to NES_PSRAM_CHR_ADDR (0 if CHR-RAM) */
   /* Exact 16-bit word written via fpga_set_chipfeat() (opcode 0xef, CHIPFEAT) and

@@ -78,6 +78,11 @@
 #define CFG_ENABLE_GAME_MANUAL           ("EnableGameManual")
 #define CFG_A26_VIDEO_WIDTH              ("A26VideoWidth")
 #define CFG_CC_TIME_LIMIT                ("CompCartTimeLimit")
+#define CFG_MENU_MUSIC_RANDOM            ("MenuMusicRandom")
+#define CFG_MENU_MUSIC_FOLDER            ("MenuMusicFolder")
+#define CFG_TEXT_OUTLINE                 ("TextOutline")
+#define CFG_TEXT_ANTIALIAS               ("TextAntiAlias")
+#define CFG_ASK_CLOCK_ON_BOOT            ("AskClockOnBoot")
 
 #define CFG_MENU_COMBO_MIN_BUTTONS       (3)
 
@@ -108,7 +113,11 @@ typedef struct __attribute__ ((__packed__)) _cfg_block {
   uint8_t  onechip_transient_fixes; /* override register 2100 bits 3-0 */
   uint8_t  brightness_limit;        /* limit brightness set by register 2100 */
   uint8_t  gsu_speed;               /* GSU speed (0: original, 1: no waitstates */
-  uint8_t  reset_to_menu;           /* Go back to menu on short reset (0=off, 1=on, 2=folder, 3=rom) */
+  uint8_t  reset_to_menu;           /* Go back to menu on reset (0=off, 1=on, 2=folder, 3=rom,
+                                       4=duration). 1..3 make EVERY press a long reset (snes.c
+                                       short-circuits the physical detection); 4 keeps that
+                                       detection alive so a SHORT press just resets the running
+                                       game while a LONG one goes to the menu like mode 3. */
   uint8_t  led_brightness;          /* LED brightness (0..15) */
   uint8_t  enable_cheats;           /* initial cheat enable state */
   uint8_t  reset_patch;             /* enable reset patch */
@@ -129,7 +138,7 @@ typedef struct __attribute__ ((__packed__)) _cfg_block {
   uint8_t  enable_autosave;         /* enable automatic saving when SRAM contents change */
   uint8_t  enable_autosave_msu1;    /* enable opportunistic auto saving when SRAM contents change for MSU1 games */
   uint8_t  show_covers;             /* per-ROM cover preview (Game.cov) in the browser (0: off, 1: large, 2: small) */
-  uint8_t  language;                /* menu/firmware language (0: English, 1: Portugues BR, 2: Spanish, 3: German, 4: French, 5: Italian) */
+  uint8_t  language;                /* menu/firmware language (0: English, 1: Portugues BR, 2: Spanish, 3: German, 4: French, 5: Italian, 6: Russian) */
   uint8_t  patch_verify_integrity;  /* CFG @ $B8: re-read+CRC the patched ROM after IPS/BPS (slow) */
   uint8_t  enable_menu_music;       /* CFG @ $B9: play background menu music (bgm_name if it is an absolute path, else /sd2snes/menu.spc) */
   uint8_t  covers_in_lists;         /* CFG @ $BA: also show covers in the Recent/Favorite lists (sub-option of show_covers) */
@@ -160,6 +169,32 @@ typedef struct __attribute__ ((__packed__)) _cfg_block {
      boards. Read at load time by smc_id and shipped to the dsp core in dsp_feat[12:8]. Menu entry
      "Competition Cart timer (min)" under Chip options (kv_cc_time_limit shows the minute count);
      YAML key CompCartTimeLimit. Default 3 = 6 minutes, the setting used at the actual events. */
+  uint8_t  menu_music_random;       /* CFG @ $14B: pick a random .spc from menu_music_folder on every
+     menu load (boot and every return from a game) instead of playing one fixed track. The draw happens
+     in the SNES_CMD_LOAD_MENU_SPC handler, which the menu already fires once per BGM load, so nothing
+     new has to be scheduled. Overrides bgm_name while on; choosing a track from the browser context
+     menu ("Set as menu music") turns it back OFF, otherwise that choice would be silently ignored.
+     An empty/unreadable folder falls back to bgm_name / /sd2snes/menu.spc, so this can never leave
+     the menu silent. Default 0. */
+  uint8_t  menu_music_folder[128];  /* CFG @ $14C: folder scanned by menu_music_random. YAML only --
+     there is no way to type a path with a pad, so the Web Manager owns this field (same precedent as
+     the button combos). Must be 128 bytes: CK_STR shares one length across skin_name/bgm_name/this
+     one (see the _Static_assert on CFG_STR_LEN in cfg.c). Default "/sd2snes/music". */
+  uint8_t  text_outline_mode;       /* CFG @ $1CC: the menu font's dark outline ring. NOT a bool --
+     0 = follow the theme (default: the .thm's own OUTLINE_OFF flag decides, which is how it behaved
+     before this option existed), 1 = force the ring ON whatever the theme asked for, 2 = force it OFF.
+     "Off" rewrites the ring pixels to transparent in the PSRAM copy of the font (theme_font_remap),
+     so the backdrop gradient shows through -- a palette tweak cannot do this, because the backdrop
+     is an HDMA gradient and any fixed colour leaves a ghost ring. Forcing it ON is free: the remap is
+     ADDITIVE, so "on" simply means not running it over the font the menu image already carries. */
+  uint8_t  text_antialias_mode;     /* CFG @ $1CD: the font's mid-tone anti-aliasing step. Same three
+     states as text_outline_mode (0 theme / 1 on / 2 off) and the same reasoning; "off" folds shade 3
+     into the fill colour (theme_font_remap). Default 0. */
+  uint8_t  ask_clock_on_boot;       /* CFG @ $1CE: show the "Please set the time" prompt when the
+     menu starts and the RTC is marked invalid (ST_RTC_VALID != 0). The firmware keeps flagging the
+     RTC invalid until the user really sets it, so without this the prompt comes back on EVERY boot.
+     Gated entirely menu-side (snes/main.a65); the RTC itself is untouched, and the "Set clock" menu
+     entry keeps working. Default 1. */
 } cfg_t;
 
 int cfg_save(void);

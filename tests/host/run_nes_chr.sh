@@ -26,6 +26,17 @@
 # byte-exact cmp against it, over the two things only composition can get wrong:
 # runs that are NOT tile-aligned (the shadow is what makes a partial tile work)
 # and runs that fall outside or cross the 8KB CHR-RAM ceiling (the clamp).
+#
+# Misalignment is checked in BOTH dispatcher paths, and the split matters: the
+# stage path carries a partial tile in a queue DESCRIPTOR, the fast-dump path
+# carries it in the dirty RANGE of nes_chrfd_mark.  Regime `fdmis` is the second
+# one, in the shape a real game produces (one ~226 B run per frame with the NES
+# screen off, so every frame boundary lands in the middle of a tile).
+#
+# NOTE on what this block does NOT measure: the fast-dump path DEFERS conversion
+# by design, so VRAM is stale until the pass runs.  The driver drains -- it steps
+# empty vblanks until the renderer reports idle -- before comparing anything.  A
+# gate that samples VRAM mid-dump measures the deferral, not the conversion.
 set -u
 cd "$(dirname "$0")"
 CC="${CC:-cc}"
@@ -284,7 +295,7 @@ NES_REQUIRED="${NES_BIN_REQUIRED:-0}"
 
 # How many cases this block WOULD check, so a SKIP is never mute: the summary
 # line says how many were left unchecked.
-render_planned=$(( 5 * 2 * $(ls corpus_chr/*.8k.chr 2>/dev/null | wc -l | tr -d ' ') + 3 * 2 * 2 + 2 * 2 ))
+render_planned=$(( 6 * 2 * $(ls corpus_chr/*.8k.chr 2>/dev/null | wc -l | tr -d ' ') + 3 * 2 * 2 + 2 * 2 ))
 
 render_skip() { # <motivo>
   if [ "$NES_REQUIRED" != "0" ]; then
@@ -343,6 +354,16 @@ run_render_block() {
       check_render "$chr_file" "$bpp" 13    --split 13               # DESALINHADO
       check_render "$chr_file" "$bpp" rnd   --split-rand 0xA53C17    # comprimentos mistos
       check_render "$chr_file" "$bpp" clamp --split 13 --clamp-probe # fora/atravessa o teto
+      # DESALINHADO x FRONTEIRA DE FRAME, no caminho de DESPEJO RAPIDO -- a
+      # forma exata do Bee 52 (mapper 71, CHR-RAM): 1 run por frame, ~226 B,
+      # comprimento que NAO e' multiplo de 16.  Cada frame comeca e termina no
+      # MEIO de um tile, entao o tile straddlado recebe metade dos bytes num
+      # frame e o resto no seguinte -- e o unico jeito de ele fechar e' o
+      # shadow.  Os regimes 13/rnd acima ja' desalinham, mas rodam no caminho
+      # de STAGE com 8 runs por frame; aqui a mesma condicao atravessa a
+      # fronteira de FRAME com a tela apagada, que e' onde a faixa suja do
+      # nes_chrfd_mark (e nao o descritor) e' quem carrega o tile partido.
+      check_render "$chr_file" "$bpp" fdmis --path fast --split 226 --rpf 1
     done
   done
 
